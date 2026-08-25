@@ -6,10 +6,13 @@ import unittest
 from pathlib import Path
 
 from src.data.prepare_core7_dataset import (
+    ITEM_METADATA_VERSION,
     build_clean_positive_samples,
+    build_core7_item_metadata,
     filter_items_by_core_category,
     load_category_mapping,
     validate_clean_positive_samples,
+    validate_core7_item_metadata,
     validate_mapping_coverage,
 )
 
@@ -137,6 +140,44 @@ class Core7DropTests(unittest.TestCase):
                 item_to_coarse,
                 min_items=3,
             )
+
+    def test_core7_item_metadata_is_versioned_and_covers_output(self):
+        filtered, _ = filter_items_by_core_category(
+            self.raw_items,
+            self.mapping,
+        )
+        samples, _ = build_clean_positive_samples(
+            [{"kit_id": "kit_a"}, {"kit_id": "kit_b"}],
+            self.raw_items,
+            filtered,
+            min_items=3,
+        )
+
+        records = build_core7_item_metadata(
+            samples,
+            filtered,
+            split="train",
+            mapping_version="core7-v1-draft",
+        )
+
+        self.assertEqual(len(records), 3)
+        self.assertEqual(
+            records[0],
+            {
+                "item_id": "kit_a_1",
+                "source_kit_id": "kit_a",
+                "slot_index": None,
+                "split": "train",
+                "master_category": "T-Shirts",
+                "coarse_category": "TOP",
+                "metadata_version": ITEM_METADATA_VERSION,
+                "mapping_version": "core7-v1-draft",
+            },
+        )
+        self.assertNotIn("kit_a_4", {row["item_id"] for row in records})
+
+        validation = validate_core7_item_metadata(records, samples)
+        self.assertTrue(validation["pass"])
 
 
 if __name__ == "__main__":

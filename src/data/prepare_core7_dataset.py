@@ -7,7 +7,8 @@ This module owns only the category-drop stage of data processing:
 2. map every ``master_category`` to one Core-7 type or ``DROP``;
 3. remove items mapped to ``DROP``;
 4. recompute outfit length and keep outfits with at least ``min_items``;
-5. export canonical category-clean positive JSONL.
+5. export canonical category-clean positive JSONL;
+6. export versioned Core-7 item metadata JSONL.
 
 This is an intermediate data stage. Image decoding and embedding-coverage
 validation still have to remove invalid items and recompute outfit length
@@ -49,6 +50,7 @@ ALLOWED_MAPPING_VALUES = frozenset((*CORE_CATEGORIES, DROP_CATEGORY))
 DEFAULT_MIN_OUTFIT_ITEMS = 3
 DEFAULT_MAPPING_PATH = Path("configs/category_mapping_core7_v1.json")
 DEFAULT_OUTPUT_DIR = Path("data/processed/core7_v1")
+ITEM_METADATA_VERSION = "core7-item-metadata-v1"
 
 
 def load_category_mapping(
@@ -303,6 +305,126 @@ def build_clean_positive_samples(
     return clean_samples, stats
 
 
+def build_core7_item_metadata(
+    samples: Sequence[dict],
+    filtered_kit_to_items: Mapping[str, Sequence[dict]],
+    *,
+    split: str,
+    mapping_version: str,
+) -> List[dict]:
+    """Build item metadata for every item used by category-clean positives.
+
+    Outfit JSONL intentionally stores only item IDs.  This separate artifact
+    preserves ``master_category`` and ``coarse_category`` for the negative
+    sampler and type-aware scorer without duplicating metadata per sample.
+    """
+
+    records: List[dict] = []
+    seen_item_ids = set()
+
+    for sample in samples:
+        kit_id = sample["source_kit_id"]
+        items_by_id = {
+            item["item_id"]: item
+            for item in filtered_kit_to_items.get(kit_id, [])
+        }
+
+        for item_id in sample["items"]:
+            if item_id in seen_item_ids:
+                continue
+
+            item = items_by_id.get(item_id)
+            if item is None:
+                raise ValueError(
+                    f"Missing filtered metadata for item: {item_id}"
+                )
+
+            records.append(
+                {
+                    "item_id": item_id,
+                    "source_kit_id": kit_id,
+                    "slot_index": item.get("slot_index"),
+                    "split": split,
+                    "master_category": item["master_category"],
+                    "coarse_category": item["coarse_category"],
+                    "metadata_version": ITEM_METADATA_VERSION,
+                    "mapping_version": mapping_version,
+                }
+            )
+            seen_item_ids.add(item_id)
+
+    return records
+
+
+def validate_core7_item_metadata(
+    records: Sequence[dict],
+    samples: Sequence[dict],
+) -> dict:
+    """Validate uniqueness, Core-7 values and outfit-item coverage."""
+
+    item_ids = [record.get("item_id") for record in records]
+    duplicate_item_ids = {
+        item_id
+        for item_id, count in Counter(item_ids).items()
+        if item_id is not None and count > 1
+    }
+    invalid_records = []
+
+    for row_number, record in enumerate(records, start=1):
+        reasons = []
+        if not record.get("item_id"):
+            reasons.append("missing_item_id")
+        if not record.get("source_kit_id"):
+            reasons.append("missing_source_kit_id")
+        if not record.get("split"):
+            reasons.append("missing_split")
+        if not record.get("master_category"):
+            reasons.append("missing_master_category")
+        if record.get("coarse_category") not in CORE_CATEGORIES:
+            reasons.append("invalid_coarse_category")
+        if record.get("metadata_version") != ITEM_METADATA_VERSION:
+            reasons.append("invalid_metadata_version")
+        if not record.get("mapping_version"):
+            reasons.append("missing_mapping_version")
+
+        if reasons:
+            invalid_records.append(
+                {"row_number": row_number, "reasons": reasons}
+            )
+
+    expected_item_ids = {
+        item_id
+        for sample in samples
+        for item_id in sample["items"]
+    }
+    metadata_item_ids = {
+        item_id for item_id in item_ids if item_id is not None
+    }
+    missing_item_ids = sorted(expected_item_ids - metadata_item_ids)
+    unexpected_item_ids = sorted(metadata_item_ids - expected_item_ids)
+
+    report = {
+        "metadata_version": ITEM_METADATA_VERSION,
+        "record_count": len(records),
+        "duplicate_item_id_count": len(duplicate_item_ids),
+        "invalid_record_count": len(invalid_records),
+        "missing_outfit_item_count": len(missing_item_ids),
+        "unexpected_item_count": len(unexpected_item_ids),
+        "pass": not duplicate_item_ids
+        and not invalid_records
+        and not missing_item_ids
+        and not unexpected_item_ids,
+    }
+
+    if not report["pass"]:
+        raise ValueError(
+            "Core-7 item metadata validation failed: "
+            + json.dumps(report, ensure_ascii=False)
+        )
+
+    return report
+
+
 def validate_clean_positive_samples(
     samples: Sequence[dict],
     item_to_coarse: Mapping[str, str],
@@ -404,6 +526,7 @@ def prepare_clean_positive_split(
     *,
     split: str,
     output_path: Path | str,
+    item_metadata_output_path: Path | str | None = None,
     mapping_path: Path | str = DEFAULT_MAPPING_PATH,
     dataset_name: str = DATASET_NAME,
     min_items: int = DEFAULT_MIN_OUTFIT_ITEMS,
@@ -438,6 +561,12 @@ def prepare_clean_positive_split(
         min_items=min_items,
         debug_limit=debug_limit,
     )
+    item_metadata = build_core7_item_metadata(
+        samples,
+        filtered_kit_to_items,
+        split=split,
+        mapping_version=mapping_metadata["mapping_version"],
+    )
 
     item_to_coarse = {
         item["item_id"]: item["coarse_category"]
@@ -449,10 +578,29 @@ def prepare_clean_positive_split(
         item_to_coarse,
         min_items=min_items,
     )
+    item_metadata_validation = validate_core7_item_metadata(
+        item_metadata,
+        samples,
+    )
 
     written = write_jsonl(samples, output_path)
     if written != len(samples):
         raise RuntimeError("Written record count does not match sample count")
+
+    if item_metadata_output_path is None:
+        positive_path = Path(output_path)
+        item_metadata_output_path = positive_path.with_name(
+            f"{positive_path.stem}_item_metadata_v1.jsonl"
+        )
+
+    metadata_written = write_jsonl(
+        item_metadata,
+        item_metadata_output_path,
+    )
+    if metadata_written != len(item_metadata):
+        raise RuntimeError(
+            "Written item metadata count does not match record count"
+        )
 
     report = {
         "processing_stage": "category_filtered_positives",
@@ -464,9 +612,12 @@ def prepare_clean_positive_split(
         "min_items": min_items,
         "debug_limit": debug_limit,
         "output_path": str(Path(output_path)),
+        "item_metadata_output_path": str(Path(item_metadata_output_path)),
+        "item_metadata_version": ITEM_METADATA_VERSION,
         "filter": filter_report,
         "outfits": outfit_report,
         "validation": validation_report,
+        "item_metadata_validation": item_metadata_validation,
     }
 
     print("Items kept     :", f"{filter_report['kept_item_count']:,}")
@@ -478,6 +629,7 @@ def prepare_clean_positive_split(
     )
     print("Validation     : PASS")
     print("Output         :", output_path)
+    print("Item metadata  :", item_metadata_output_path)
     print()
 
     return report
@@ -489,6 +641,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--split", required=True, choices=("train", "valid", "test"))
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--item-metadata-output", type=Path, default=None)
     parser.add_argument("--mapping", type=Path, default=DEFAULT_MAPPING_PATH)
     parser.add_argument("--dataset-name", default=DATASET_NAME)
     parser.add_argument("--min-items", type=int, default=DEFAULT_MIN_OUTFIT_ITEMS)
@@ -502,6 +655,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     report = prepare_clean_positive_split(
         split=args.split,
         output_path=args.output,
+        item_metadata_output_path=args.item_metadata_output,
         mapping_path=args.mapping,
         dataset_name=args.dataset_name,
         min_items=args.min_items,
