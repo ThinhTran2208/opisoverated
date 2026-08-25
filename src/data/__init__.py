@@ -1,1 +1,1 @@
-"""Data processing package."""
+"""Reusable data-processing modules for the project."""

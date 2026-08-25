@@ -11,7 +11,7 @@ __pycache__/
 *.npz
 *.npy
 
-data/
+/data/
 checkpoints/
 outputs/
 cache/
