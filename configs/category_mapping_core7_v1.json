@@ -1,6 +1,6 @@
 {
-  "mapping_version": "core7-v1-draft",
-  "status": "draft",
+  "mapping_version": "core7-v1",
+  "status": "frozen", 
   "source_mapping": "item_to_master_category.json",
   "source_item_count": 142480,
   "source_master_category_count": 380,
@@ -16,7 +16,7 @@
     ],
     "default_decision": "DROP",
     "negative_sampling_category": "master_category",
-    "note": "Mapping nháp để nhóm review. Các category chung chung, swimwear, intimates, jewelry, beauty, home và non-fashion mặc định DROP."
+    "note": "Frozen Core-7 mapping used for category-clean dataset v1."
   },
   "decision_counts": {
     "DROP": 271,
