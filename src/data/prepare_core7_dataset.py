@@ -102,6 +102,22 @@ def load_category_mapping(
     metadata.setdefault("mapping_version", mapping_path.stem)
     metadata.setdefault("status", "unknown")
 
+    declared_counts = metadata.get("decision_counts")
+    if declared_counts is not None:
+        if not isinstance(declared_counts, dict):
+            raise ValueError("decision_counts must be a JSON object")
+
+        actual_counts = dict(Counter(mapping.values()))
+        normalized_declared_counts = {
+            str(decision).strip().upper(): int(count)
+            for decision, count in declared_counts.items()
+        }
+        if normalized_declared_counts != actual_counts:
+            raise ValueError(
+                "decision_counts does not match mapping values: "
+                f"declared={normalized_declared_counts}, actual={actual_counts}"
+            )
+
     return metadata, mapping
 
 

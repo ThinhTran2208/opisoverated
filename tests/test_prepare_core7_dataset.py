@@ -50,6 +50,54 @@ class Core7DropTests(unittest.TestCase):
         self.assertEqual(metadata["mapping_version"], "unit-test-v1")
         self.assertEqual(mapping, self.mapping)
 
+    def test_declared_decision_counts_must_match_mapping(self):
+        payload = {
+            "mapping_version": "unit-test-v1",
+            "status": "frozen",
+            "decision_counts": {"TOP": 99},
+            "mapping": self.mapping,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "mapping.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "decision_counts"):
+                load_category_mapping(path)
+
+    def test_production_mapping_locks_v1_scope(self):
+        mapping_path = (
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / "category_mapping_core7_v1.json"
+        )
+        metadata, mapping = load_category_mapping(mapping_path)
+
+        self.assertEqual(metadata["mapping_version"], "core7-v1")
+        self.assertEqual(metadata["status"], "frozen")
+
+        for category in (
+            "Activewear Jackets",
+            "Activewear Pants",
+            "Activewear Shorts",
+            "Activewear Skirts",
+            "Activewear Tank Tops",
+            "Activewear Tops",
+            "Bags & Cases",
+            "Camisoles",
+            "Men's Activewear Jackets",
+            "Men's Activewear Pants",
+            "Men's Activewear Shorts",
+            "Men's Activewear Tops",
+            "Men's Bags & Wallets",
+        ):
+            self.assertEqual(mapping[category], "DROP")
+
+        self.assertEqual(mapping["Athletic Shoes"], "SHOES")
+        self.assertEqual(mapping["Men's Athletic Shoes"], "SHOES")
+        self.assertEqual(mapping["Men's Bags"], "BAG")
+        self.assertEqual(mapping["Slippers"], "SHOES")
+        self.assertEqual(mapping["Men's Slippers"], "SHOES")
+
     def test_mapping_must_cover_every_observed_category(self):
         with self.assertRaisesRegex(ValueError, "Missing master categories"):
             validate_mapping_coverage(
