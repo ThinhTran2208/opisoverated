@@ -23,6 +23,7 @@ class RuntimePathTests(unittest.TestCase):
                 {
                     "artifact_root": "./data",
                     "embedding_cache": "cache/embeddings.pt",
+                    "embedding_manifest": "cache/embedding_manifest_v1.json",
                     "core7_dir": "core7",
                     "scorer_ready_dir": "scorer",
                 }
@@ -39,6 +40,10 @@ class RuntimePathTests(unittest.TestCase):
 
             self.assertEqual(paths.artifact_root, (root / "data").resolve())
             self.assertEqual(paths.embedding_cache, (root / "data/cache/embeddings.pt").resolve())
+            self.assertEqual(
+                paths.embedding_manifest,
+                (root / "data/cache/embedding_manifest_v1.json").resolve(),
+            )
             self.assertEqual(paths.core7_dir, (root / "data/core7").resolve())
             self.assertEqual(paths.scorer_ready_dir, (root / "data/scorer").resolve())
 
@@ -53,6 +58,7 @@ class RuntimePathTests(unittest.TestCase):
                 env={
                     "FASHION_ARTIFACT_ROOT": str(external),
                     "FASHION_EMBEDDING_CACHE": "shared/fashionclip.pt",
+                    "FASHION_EMBEDDING_MANIFEST": "shared/manifest.json",
                 },
             )
 
@@ -60,6 +66,10 @@ class RuntimePathTests(unittest.TestCase):
             self.assertEqual(
                 paths.embedding_cache,
                 (external / "shared/fashionclip.pt").resolve(),
+            )
+            self.assertEqual(
+                paths.embedding_manifest,
+                (external / "shared/manifest.json").resolve(),
             )
 
     def test_local_config_takes_precedence_over_example(self):
