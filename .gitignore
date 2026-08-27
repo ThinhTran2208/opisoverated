@@ -11,10 +11,13 @@ __pycache__/
 *.npz
 *.npy
 
-data/
-checkpoints/
-outputs/
-cache/
+/data/
+/checkpoints/
+/outputs/
+/cache/
+
+# Machine-specific artifact locations. Commit only the example config.
+configs/data_paths.local.json
 
 .DS_Store
 .vscode/

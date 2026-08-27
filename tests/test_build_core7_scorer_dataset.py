@@ -1,18 +1,24 @@
-"""Tests for Core-7 negative sampling, merge, and final validation."""
+"""Tests for Core-7 V2 negative sampling, merge, and final validation."""
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from src.data.build_core7_scorer_dataset import (
+    DATASET_VERSION_V2,
     NEGATIVE_TYPE,
-    build_scorer_dataset_v1,
+    NEGATIVE_VERSION,
+    build_scorer_dataset_v2,
     generate_negative_records,
+    inspect_git_provenance,
     merge_positive_negative_families,
+    sha256_file,
     validate_all_splits,
     validate_scorer_split,
 )
+from src.data.validate_core7_embeddings import fingerprint_category_mapping
 
 
 def positive(kit_id: str, items: list[str]) -> dict:
@@ -35,7 +41,7 @@ def metadata_row(
 ) -> dict:
     return {
         "item_metadata_version": "core7-item-metadata-v1",
-        "category_mapping_version": "core7-v1",
+        "category_mapping_version": "core7-v2",
         "split": split,
         "item_id": item_id,
         "source_kit_id": kit_id,
@@ -78,6 +84,85 @@ def write_jsonl(path: Path, records: list[dict]) -> None:
             stream.write("\n")
 
 
+def write_mapping_files(root: Path) -> Path:
+    v1_path = root / "category_mapping_core7_v1.json"
+    v2_path = root / "category_mapping_core7_v2.json"
+    v1_path.write_text(
+        json.dumps(
+            {
+                "mapping_version": "core7-v1",
+                "status": "frozen",
+                "mapping": {
+                    "T-Shirts": "TOP",
+                    "Jeans": "BOTTOM",
+                    "Sneakers": "SHOES",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    v2_path.write_text(
+        json.dumps(
+            {
+                "mapping_version": "core7-v2",
+                "status": "frozen",
+                "base_mapping": v1_path.name,
+                "overrides": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return v2_path
+
+
+def embedding_report_for_files(
+    data_dir: Path,
+    cache_path: Path,
+    manifest_path: Path,
+    mapping_path: Path,
+) -> dict:
+    splits = {}
+    fingerprints = {}
+    for split in ("train", "valid", "test"):
+        positive_path = data_dir / f"category_clean_{split}.jsonl"
+        metadata_path = data_dir / f"core7_item_metadata_v1_{split}.jsonl"
+        splits[split] = {"pass": True, "embedding_coverage": 1.0}
+        fingerprints[split] = {
+            "positive_path": str(positive_path),
+            "positive_sha256": sha256_file(positive_path),
+            "metadata_path": str(metadata_path),
+            "metadata_sha256": sha256_file(metadata_path),
+        }
+    return {
+        "pass": True,
+        "category_mapping_version": "core7-v2",
+        "embedding_version": "fashionclip-512-l2-v1",
+        "cache": {
+            "model_id": "patrickjohncyh/fashion-clip",
+            "embedding_dim": 512,
+            "embedding_dtype": "float16",
+        },
+        "manifest": {
+            "pass": True,
+            "preprocessing_version": "fashionclip-preprocess-v1",
+            "normalization": "l2",
+        },
+        "splits": splits,
+        "inputs": {
+            "category_mapping": fingerprint_category_mapping(mapping_path),
+            "embedding_cache": {
+                "path": str(cache_path),
+                "sha256": sha256_file(cache_path),
+            },
+            "embedding_manifest": {
+                "path": str(manifest_path),
+                "sha256": sha256_file(manifest_path),
+            },
+            "splits": fingerprints,
+        },
+    }
+
+
 class Core7ScorerDatasetTests(unittest.TestCase):
     def test_negative_is_one_same_category_different_kit_swap(self):
         positives, metadata = make_split("train", "tr")
@@ -99,9 +184,7 @@ class Core7ScorerDatasetTests(unittest.TestCase):
             ]
             self.assertEqual(differences, [block["swapped_item_index"]])
             self.assertEqual(block["negative_type"], NEGATIVE_TYPE)
-            self.assertNotEqual(
-                block["replacement_kit_id"], source["source_kit_id"]
-            )
+            self.assertNotEqual(block["replacement_kit_id"], source["source_kit_id"])
             self.assertNotIn(block["replacement_item_id"], source["items"])
 
     def test_sampling_is_reproducible_for_same_seed(self):
@@ -182,65 +265,306 @@ class Core7ScorerDatasetTests(unittest.TestCase):
         report = validate_all_splits(
             records_by_split,
             metadata_by_split,
-            embedding_report={"pass": True, "splits": embedding_splits},
+            embedding_report={
+                "pass": True,
+                "category_mapping_version": "core7-v2",
+                "manifest": {"pass": True},
+                "splits": embedding_splits,
+            },
             sampling_reports=sampling_reports,
         )
 
         self.assertTrue(report["pass"])
         self.assertEqual(report["status"], "READY_TO_TRAIN")
 
-    def test_end_to_end_builder_writes_ready_manifests(self):
+    def _write_clean_git_repo(self, root: Path) -> Path:
+        repo_root = root / "repo"
+        repo_root.mkdir()
+        subprocess.run(["git", "init", "--quiet"], cwd=repo_root, check=True)
+        tracked = repo_root / "tracked.txt"
+        tracked.write_text("clean\n", encoding="utf-8")
+        source = repo_root / "src/data/build_core7_scorer_dataset.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("# unit-test builder marker\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "tracked.txt", source.relative_to(repo_root).as_posix()],
+            cwd=repo_root,
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Unit Test",
+                "-c",
+                "user.email=unit@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "initial",
+            ],
+            cwd=repo_root,
+            check=True,
+        )
+        return repo_root
+
+    def _write_end_to_end_inputs(self, root: Path):
+        data_dir = root / "input"
+        output_dir = root / "output"
+        data_dir.mkdir()
+        for index, split in enumerate(("train", "valid", "test")):
+            positives, metadata = make_split(split, f"s{index}")
+            write_jsonl(data_dir / f"category_clean_{split}.jsonl", positives)
+            write_jsonl(
+                data_dir / f"core7_item_metadata_v1_{split}.jsonl",
+                metadata,
+            )
+        cache_path = root / "fashionclip.pt"
+        manifest_path = root / "embedding_manifest_v1.json"
+        mapping_path = write_mapping_files(root)
+        cache_path.write_bytes(b"unit-test-cache")
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "embedding_version": "fashionclip-512-l2-v1",
+                    "model_name_or_version": "patrickjohncyh/fashion-clip",
+                    "preprocessing_version": "fashionclip-preprocess-v1",
+                    "embedding_dimension": 512,
+                    "normalization": "l2",
+                    "dtype": "float16",
+                    "item_count": 18,
+                    "cache_sha256": sha256_file(cache_path),
+                }
+            ),
+            encoding="utf-8",
+        )
+        embedding_report_path = data_dir / "embedding_report.json"
+        embedding_report_path.write_text(
+            json.dumps(
+                embedding_report_for_files(
+                    data_dir,
+                    cache_path,
+                    manifest_path,
+                    mapping_path,
+                )
+            ),
+            encoding="utf-8",
+        )
+        repo_root = self._write_clean_git_repo(root)
+        return (
+            data_dir,
+            output_dir,
+            cache_path,
+            manifest_path,
+            mapping_path,
+            embedding_report_path,
+            repo_root,
+        )
+
+    def test_end_to_end_builder_writes_ready_v2_manifests(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            data_dir = root / "input"
-            output_dir = root / "output"
-            data_dir.mkdir()
-            embedding_splits = {}
+            (
+                data_dir,
+                output_dir,
+                cache_path,
+                manifest_path,
+                mapping_path,
+                embedding_report_path,
+                repo_root,
+            ) = self._write_end_to_end_inputs(root)
 
-            for index, split in enumerate(("train", "valid", "test")):
-                positives, metadata = make_split(split, f"s{index}")
-                write_jsonl(data_dir / f"category_clean_{split}.jsonl", positives)
-                write_jsonl(
-                    data_dir / f"core7_item_metadata_v1_{split}.jsonl",
-                    metadata,
-                )
-                embedding_splits[split] = {
-                    "pass": True,
-                    "embedding_coverage": 1.0,
-                }
-
-            embedding_report_path = data_dir / "embedding_report.json"
-            embedding_report_path.write_text(
-                json.dumps(
-                    {
-                        "pass": True,
-                        "cache": {
-                            "model_id": "patrickjohncyh/fashion-clip",
-                            "embedding_dim": 512,
-                        },
-                        "splits": embedding_splits,
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            result = build_scorer_dataset_v1(
+            result = build_scorer_dataset_v2(
                 data_dir=data_dir,
                 output_dir=output_dir,
                 embedding_report_path=embedding_report_path,
-                git_commit="unit-test",
+                category_mapping_path=mapping_path,
+                embedding_cache_path=cache_path,
+                embedding_manifest_path=manifest_path,
+                repo_root=repo_root,
             )
 
             self.assertEqual(result["status"], "READY_TO_TRAIN")
-            self.assertTrue((output_dir / "dataset_manifest_v1.json").exists())
-            self.assertTrue((output_dir / "split_manifest_v1.json").exists())
+            self.assertTrue((output_dir / "dataset_manifest_v2.json").exists())
+            self.assertTrue((output_dir / "split_manifest_v2.json").exists())
+            self.assertTrue((output_dir / "scorer_ready_v2_train.jsonl").exists())
             manifest = json.loads(
-                (output_dir / "dataset_manifest_v1.json").read_text(
-                    encoding="utf-8"
-                )
+                (output_dir / "dataset_manifest_v2.json").read_text(encoding="utf-8")
             )
             self.assertEqual(manifest["status"], "READY_TO_TRAIN")
+            self.assertEqual(manifest["dataset_version"], DATASET_VERSION_V2)
+            self.assertEqual(
+                manifest["git_commit"],
+                inspect_git_provenance(repo_root)["git_commit"],
+            )
+            self.assertIs(manifest["git_tree_clean"], True)
+            self.assertEqual(manifest["category_mapping_version"], "core7-v2")
+            self.assertEqual(
+                manifest["negative_protocol_version"], NEGATIVE_VERSION
+            )
             self.assertEqual(manifest["negative_seed"], 42)
+            self.assertEqual(
+                manifest["embedding_cache_sha256"], sha256_file(cache_path)
+            )
+
+    def test_builder_rejects_stale_embedding_report_after_positive_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (
+                data_dir,
+                output_dir,
+                cache_path,
+                manifest_path,
+                mapping_path,
+                embedding_report_path,
+                repo_root,
+            ) = self._write_end_to_end_inputs(root)
+
+            with (data_dir / "category_clean_train.jsonl").open(
+                "a", encoding="utf-8"
+            ) as stream:
+                stream.write("{}\n")
+
+            with self.assertRaisesRegex(ValueError, "stale"):
+                build_scorer_dataset_v2(
+                    data_dir=data_dir,
+                    output_dir=output_dir,
+                    embedding_report_path=embedding_report_path,
+                    category_mapping_path=mapping_path,
+                    embedding_cache_path=cache_path,
+                    embedding_manifest_path=manifest_path,
+                    repo_root=repo_root,
+                )
+
+    def test_builder_rejects_stale_embedding_report_after_mapping_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (
+                data_dir,
+                output_dir,
+                cache_path,
+                manifest_path,
+                mapping_path,
+                embedding_report_path,
+                repo_root,
+            ) = self._write_end_to_end_inputs(root)
+
+            payload = json.loads(mapping_path.read_text(encoding="utf-8"))
+            payload["overrides"]["T-Shirts"] = "DROP"
+            mapping_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "stale"):
+                build_scorer_dataset_v2(
+                    data_dir=data_dir,
+                    output_dir=output_dir,
+                    embedding_report_path=embedding_report_path,
+                    category_mapping_path=mapping_path,
+                    embedding_cache_path=cache_path,
+                    embedding_manifest_path=manifest_path,
+                    repo_root=repo_root,
+                )
+
+    def test_builder_rejects_stale_report_after_base_mapping_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (
+                data_dir,
+                output_dir,
+                cache_path,
+                manifest_path,
+                mapping_path,
+                embedding_report_path,
+                repo_root,
+            ) = self._write_end_to_end_inputs(root)
+
+            v2_payload = json.loads(mapping_path.read_text(encoding="utf-8"))
+            base_path = mapping_path.parent / v2_payload["base_mapping"]
+            base_payload = json.loads(base_path.read_text(encoding="utf-8"))
+            base_payload["mapping"]["T-Shirts"] = "DROP"
+            base_path.write_text(json.dumps(base_payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "stale"):
+                build_scorer_dataset_v2(
+                    data_dir=data_dir,
+                    output_dir=output_dir,
+                    embedding_report_path=embedding_report_path,
+                    category_mapping_path=mapping_path,
+                    embedding_cache_path=cache_path,
+                    embedding_manifest_path=manifest_path,
+                    repo_root=repo_root,
+                )
+
+    def test_builder_blocks_missing_commit_before_creating_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (
+                data_dir,
+                output_dir,
+                cache_path,
+                manifest_path,
+                mapping_path,
+                embedding_report_path,
+                repo_root,
+            ) = self._write_end_to_end_inputs(root)
+
+            with self.assertRaisesRegex(ValueError, "Git commit"):
+                build_scorer_dataset_v2(
+                    data_dir=data_dir,
+                    output_dir=output_dir,
+                    embedding_report_path=embedding_report_path,
+                    category_mapping_path=mapping_path,
+                    embedding_cache_path=cache_path,
+                    embedding_manifest_path=manifest_path,
+                    repo_root=root / "not-a-git-repository",
+                )
+
+            self.assertFalse(output_dir.exists())
+
+    def test_builder_blocks_dirty_tree_before_creating_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (
+                data_dir,
+                output_dir,
+                cache_path,
+                manifest_path,
+                mapping_path,
+                embedding_report_path,
+                repo_root,
+            ) = self._write_end_to_end_inputs(root)
+
+            (repo_root / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "clean Git working tree"):
+                build_scorer_dataset_v2(
+                    data_dir=data_dir,
+                    output_dir=output_dir,
+                    embedding_report_path=embedding_report_path,
+                    category_mapping_path=mapping_path,
+                    embedding_cache_path=cache_path,
+                    embedding_manifest_path=manifest_path,
+                    repo_root=repo_root,
+                )
+
+            self.assertFalse(output_dir.exists())
+
+    def test_git_provenance_detects_clean_and_dirty_tree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo_root = self._write_clean_git_repo(root)
+
+            clean = inspect_git_provenance(repo_root)
+            self.assertTrue(clean["git_commit"])
+            self.assertIs(clean["git_tree_clean"], True)
+            self.assertEqual(clean["dirty_entry_count"], 0)
+
+            (repo_root / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+            dirty = inspect_git_provenance(repo_root)
+            self.assertIs(dirty["git_tree_clean"], False)
+            self.assertEqual(dirty["dirty_entry_count"], 1)
+            self.assertIn("tracked.txt", dirty["dirty_entry_examples"][0])
 
 
 if __name__ == "__main__":

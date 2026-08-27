@@ -1,0 +1,47 @@
+{
+  "mapping_version": "core7-v2",
+  "status": "frozen",
+  "base_mapping": "category_mapping_core7_v1.json",
+  "source_mapping": "item_to_master_category.json",
+  "source_item_count": 142480,
+  "source_master_category_count": 380,
+  "policy": {
+    "kept_coarse_categories": [
+      "TOP",
+      "BOTTOM",
+      "DRESS",
+      "OUTERWEAR",
+      "SHOES",
+      "BAG",
+      "HAT"
+    ],
+    "default_decision": "DROP",
+    "negative_sampling_category": "master_category",
+    "note": "Core-7 V2 narrows V1 toward everyday/casual outfits. Activewear, swimwear, intimates, ambiguous accessory groups and non-fashion categories are DROP. Athletic Shoes and Slippers remain SHOES."
+  },
+  "decision_counts": {
+    "DROP": 284,
+    "OUTERWEAR": 11,
+    "BOTTOM": 20,
+    "TOP": 17,
+    "SHOES": 27,
+    "BAG": 12,
+    "DRESS": 7,
+    "HAT": 2
+  },
+  "overrides": {
+    "Activewear Jackets": "DROP",
+    "Activewear Pants": "DROP",
+    "Activewear Shorts": "DROP",
+    "Activewear Skirts": "DROP",
+    "Activewear Tank Tops": "DROP",
+    "Activewear Tops": "DROP",
+    "Bags & Cases": "DROP",
+    "Camisoles": "DROP",
+    "Men's Activewear Jackets": "DROP",
+    "Men's Activewear Pants": "DROP",
+    "Men's Activewear Shorts": "DROP",
+    "Men's Activewear Tops": "DROP",
+    "Men's Bags & Wallets": "DROP"
+  }
+}

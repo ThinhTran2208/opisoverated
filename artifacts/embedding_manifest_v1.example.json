@@ -1,0 +1,10 @@
+{
+  "embedding_version": "fashionclip-512-l2-v1",
+  "model_name_or_version": "patrickjohncyh/fashion-clip",
+  "preprocessing_version": "REPLACE_WITH_EXACT_PREPROCESSING_VERSION",
+  "embedding_dimension": 512,
+  "normalization": "l2",
+  "dtype": "float16",
+  "item_count": 0,
+  "cache_sha256": "REPLACE_WITH_SHA256_OF_FASHIONCLIP_CACHE"
+}

@@ -1,22 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Build and freeze the Core-7 scorer-ready benchmark (dataset V1).
+"""Build and freeze the Core-7 V2 scorer-ready benchmark.
 
-Inputs per official split:
-
-* ``category_clean_{split}.jsonl`` (final clean positives after NB3 pass);
-* ``core7_item_metadata_v1_{split}.jsonl``;
-* one passing ``core7_embedding_validation_report.json``.
-
-Outputs:
-
-* one negative-only JSONL per split;
-* one interleaved positive + negative scorer-ready JSONL per split;
-* negative-sampling reports;
-* a final validation report;
-* split and dataset manifests with SHA-256 hashes.
-
-Negative V1 is frozen as one same-master-category, different-kit replacement
-per positive outfit. Candidate pools never cross official splits.
+Core-7 V2 uses the frozen ``core7-v2`` mapping while retaining Negative V1
+(``same_category_different_kit``). Before any negative is generated, the NB3
+embedding validation report must be PASS *and* its SHA-256 fingerprints must
+match the exact category mapping, positive JSONL, item-metadata JSONL,
+FashionCLIP cache, and embedding manifest supplied to this build. A stale
+report is a hard failure.
 """
 
 from __future__ import annotations
@@ -25,19 +15,88 @@ import argparse
 import hashlib
 import json
 import random
+import subprocess
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, Mapping, Optional, Sequence
+from typing import Iterable, Mapping, Optional, Sequence
+
+from .validate_core7_embeddings import fingerprint_category_mapping
 
 
 SPLITS = ("train", "valid", "test")
-DATASET_VERSION = "polyvore1000-core7-compat-v1"
+DATASET_VERSION_V1 = "polyvore1000-core7-compat-v1"
+DATASET_VERSION_V2 = "polyvore1000-core7-compat-v2"
+DATASET_VERSION = DATASET_VERSION_V2
+CATEGORY_MAPPING_VERSION = "core7-v2"
+ITEM_METADATA_VERSION = "core7-item-metadata-v1"
 NEGATIVE_VERSION = "negative-v1"
 NEGATIVE_TYPE = "same_category_different_kit"
 DEFAULT_SEED = 42
 DEFAULT_MIN_ITEMS = 3
 MAX_EXAMPLES = 50
+
+
+def inspect_git_provenance(repo_root: Path | str) -> dict:
+    """Return the exact commit and working-tree state used for an official freeze."""
+
+    root = Path(repo_root).expanduser().resolve()
+    try:
+        commit = subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "--verify", "HEAD"],
+            text=True,
+            stderr=subprocess.STDOUT,
+        ).strip()
+        porcelain = subprocess.check_output(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            text=True,
+            stderr=subprocess.STDOUT,
+        )
+    except FileNotFoundError:
+        return {
+            "git_commit": None,
+            "git_tree_clean": False,
+            "dirty_entry_count": 0,
+            "dirty_entry_examples": [],
+            "error": "Git executable is unavailable.",
+        }
+    except subprocess.CalledProcessError as error:
+        detail = (error.output or "").strip()
+        return {
+            "git_commit": None,
+            "git_tree_clean": False,
+            "dirty_entry_count": 0,
+            "dirty_entry_examples": [],
+            "error": detail or f"Unable to inspect Git repository at {root}.",
+        }
+
+    dirty_entries = [line for line in porcelain.splitlines() if line.strip()]
+    return {
+        "git_commit": commit or None,
+        "git_tree_clean": bool(commit and not dirty_entries),
+        "dirty_entry_count": len(dirty_entries),
+        "dirty_entry_examples": dirty_entries[:MAX_EXAMPLES],
+        "error": None if commit else "Git HEAD did not resolve to a commit.",
+    }
+
+
+def require_freeze_git_provenance(
+    *, git_commit: str | None, git_tree_clean: bool | None
+) -> str:
+    """Hard-fail an official dataset freeze that cannot be reproduced from Git."""
+
+    normalized_commit = str(git_commit or "").strip()
+    if not normalized_commit:
+        raise ValueError(
+            "BLOCKED: an official dataset freeze requires a resolvable Git commit; "
+            "READY_TO_TRAIN was not created."
+        )
+    if git_tree_clean is not True:
+        raise ValueError(
+            "BLOCKED: an official dataset freeze requires a clean Git working tree; "
+            "commit or discard local changes before creating READY_TO_TRAIN."
+        )
+    return normalized_commit
 
 
 def read_json(path: Path | str) -> dict:
@@ -72,9 +131,7 @@ def read_jsonl(path: Path | str) -> list[dict]:
                     f"Invalid JSON at {source}:{line_number}: {error}"
                 ) from error
             if not isinstance(record, dict):
-                raise ValueError(
-                    f"Expected JSON object at {source}:{line_number}"
-                )
+                raise ValueError(f"Expected JSON object at {source}:{line_number}")
             records.append(record)
     return records
 
@@ -85,9 +142,7 @@ def write_jsonl(records: Iterable[dict], path: Path | str) -> int:
     count = 0
     with destination.open("w", encoding="utf-8") as stream:
         for record in records:
-            stream.write(
-                json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-            )
+            stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
             stream.write("\n")
             count += 1
     return count
@@ -101,6 +156,137 @@ def sha256_file(path: Path | str) -> str:
     return digest.hexdigest()
 
 
+def verify_embedding_report_inputs(
+    embedding_report: Mapping[str, object],
+    *,
+    data_dir: Path | str,
+    category_mapping_path: Path | str,
+    embedding_cache_path: Path | str,
+    embedding_manifest_path: Path | str,
+) -> dict:
+    """Require the NB3 PASS report to match the exact current artifacts."""
+
+    if not embedding_report.get("pass"):
+        raise ValueError("Embedding validation report is not PASS")
+    if embedding_report.get("category_mapping_version") != CATEGORY_MAPPING_VERSION:
+        raise ValueError(
+            "Embedding report category mapping mismatch: "
+            f"expected={CATEGORY_MAPPING_VERSION}, "
+            f"actual={embedding_report.get('category_mapping_version')!r}"
+        )
+    if not isinstance(embedding_report.get("manifest"), Mapping) or not embedding_report[
+        "manifest"
+    ].get("pass"):
+        raise ValueError("Embedding validation report does not contain a passing manifest gate")
+
+    inputs = embedding_report.get("inputs")
+    if not isinstance(inputs, Mapping):
+        raise ValueError(
+            "Embedding validation report is not bound to exact inputs; missing inputs hashes"
+        )
+    reported_mapping = inputs.get("category_mapping")
+    reported_cache = inputs.get("embedding_cache")
+    reported_manifest = inputs.get("embedding_manifest")
+    reported_splits = inputs.get("splits")
+    if not isinstance(reported_mapping, Mapping):
+        raise ValueError("Embedding report missing category_mapping fingerprint")
+    if not isinstance(reported_cache, Mapping):
+        raise ValueError("Embedding report missing embedding_cache fingerprint")
+    if not isinstance(reported_manifest, Mapping):
+        raise ValueError("Embedding report missing embedding_manifest fingerprint")
+    if not isinstance(reported_splits, Mapping):
+        raise ValueError("Embedding report missing split fingerprints")
+
+    source_dir = Path(data_dir)
+    mapping_path = Path(category_mapping_path)
+    cache_path = Path(embedding_cache_path)
+    manifest_path = Path(embedding_manifest_path)
+    mismatches: list[dict] = []
+
+    def check(label: str, path: Path, expected_sha: object) -> None:
+        if not path.is_file():
+            mismatches.append(
+                {"artifact": label, "path": str(path), "reason": "missing_current_file"}
+            )
+            return
+        actual_sha = sha256_file(path)
+        if not isinstance(expected_sha, str) or actual_sha != expected_sha:
+            mismatches.append(
+                {
+                    "artifact": label,
+                    "path": str(path),
+                    "reason": "sha256_mismatch",
+                    "report_sha256": expected_sha,
+                    "current_sha256": actual_sha,
+                }
+            )
+
+    current_mapping = fingerprint_category_mapping(mapping_path)
+    check("category_mapping", mapping_path, reported_mapping.get("sha256"))
+    check(
+        "category_mapping_base",
+        Path(current_mapping["base_path"]),
+        reported_mapping.get("base_sha256"),
+    )
+    if (
+        reported_mapping.get("resolved_mapping_sha256")
+        != current_mapping["resolved_mapping_sha256"]
+    ):
+        mismatches.append(
+            {
+                "artifact": "category_mapping_resolved",
+                "reason": "sha256_mismatch",
+                "report_sha256": reported_mapping.get(
+                    "resolved_mapping_sha256"
+                ),
+                "current_sha256": current_mapping[
+                    "resolved_mapping_sha256"
+                ],
+            }
+        )
+
+    check("embedding_cache", cache_path, reported_cache.get("sha256"))
+    check("embedding_manifest", manifest_path, reported_manifest.get("sha256"))
+    for split in SPLITS:
+        split_fingerprint = reported_splits.get(split)
+        if not isinstance(split_fingerprint, Mapping):
+            mismatches.append(
+                {"artifact": f"split:{split}", "reason": "missing_report_fingerprint"}
+            )
+            continue
+        check(
+            f"{split}:positive",
+            source_dir / f"category_clean_{split}.jsonl",
+            split_fingerprint.get("positive_sha256"),
+        )
+        check(
+            f"{split}:metadata",
+            source_dir / f"core7_item_metadata_v1_{split}.jsonl",
+            split_fingerprint.get("metadata_sha256"),
+        )
+
+    report = {
+        "pass": not mismatches,
+        "mismatch_count": len(mismatches),
+        "mismatches": mismatches[:MAX_EXAMPLES],
+        "category_mapping_sha256": current_mapping["sha256"],
+        "category_mapping_base_sha256": current_mapping["base_sha256"],
+        "resolved_mapping_sha256": current_mapping[
+            "resolved_mapping_sha256"
+        ],
+        "embedding_cache_sha256": sha256_file(cache_path) if cache_path.is_file() else None,
+        "embedding_manifest_sha256": (
+            sha256_file(manifest_path) if manifest_path.is_file() else None
+        ),
+    }
+    if mismatches:
+        raise ValueError(
+            "Embedding validation report is stale or belongs to different artifacts: "
+            + json.dumps(report, ensure_ascii=False)
+        )
+    return report
+
+
 def build_metadata_indexes(
     metadata: Sequence[dict],
     *,
@@ -110,7 +296,6 @@ def build_metadata_indexes(
 
     item_by_id: dict[str, dict] = {}
     category_to_items: dict[str, list[dict]] = defaultdict(list)
-
     for row_number, raw_record in enumerate(metadata, start=1):
         record = dict(raw_record)
         item_id = str(record.get("item_id", "")).strip()
@@ -127,14 +312,15 @@ def build_metadata_indexes(
             raise ValueError(
                 f"Metadata item {item_id} says split={record_split}, expected {split}"
             )
-        if str(record.get("category_mapping_version", "")) != "core7-v1":
+        if str(record.get("category_mapping_version", "")) != CATEGORY_MAPPING_VERSION:
             raise ValueError(
-                f"Metadata item {item_id} does not use category_mapping_version=core7-v1"
+                f"Metadata item {item_id} does not use "
+                f"category_mapping_version={CATEGORY_MAPPING_VERSION}"
             )
-        if str(record.get("item_metadata_version", "")) != "core7-item-metadata-v1":
+        if str(record.get("item_metadata_version", "")) != ITEM_METADATA_VERSION:
             raise ValueError(
-                f"Metadata item {item_id} does not use item_metadata_version="
-                "core7-item-metadata-v1"
+                f"Metadata item {item_id} does not use "
+                f"item_metadata_version={ITEM_METADATA_VERSION}"
             )
         if item_id in item_by_id:
             raise ValueError(f"Duplicate metadata item_id in split={split}: {item_id}")
@@ -149,7 +335,6 @@ def build_metadata_indexes(
 
     for pool in category_to_items.values():
         pool.sort(key=lambda item: item["item_id"])
-
     return item_by_id, dict(category_to_items)
 
 
@@ -160,11 +345,8 @@ def _choose_replacement(
     source_kit_id: str,
     rng: random.Random,
 ) -> Optional[dict]:
-    """Choose one valid candidate without materializing a filtered large pool."""
-
     if not pool:
         return None
-
     start = rng.randrange(len(pool))
     for offset in range(len(pool)):
         candidate = pool[(start + offset) % len(pool)]
@@ -184,8 +366,6 @@ def create_negative_for_positive(
     rng: random.Random,
     negative_number: int = 1,
 ) -> tuple[Optional[dict], Optional[str]]:
-    """Create one deterministic, category-preserving negative for a positive."""
-
     sample_id = str(positive.get("sample_id", "")).strip()
     source_kit_id = str(positive.get("source_kit_id", "")).strip()
     original_items = [str(item_id) for item_id in positive.get("items", [])]
@@ -194,16 +374,13 @@ def create_negative_for_positive(
     if int(positive.get("label", -1)) != 1:
         return None, "input_is_not_positive"
 
-    missing_metadata = [
-        item_id for item_id in original_items if item_id not in item_by_id
-    ]
+    missing_metadata = [item_id for item_id in original_items if item_id not in item_by_id]
     if missing_metadata:
         return None, "positive_missing_metadata"
 
     original_item_ids = set(original_items)
     positions = list(range(len(original_items)))
     rng.shuffle(positions)
-
     for swapped_item_index in positions:
         original_item_id = original_items[swapped_item_index]
         original_metadata = item_by_id[original_item_id]
@@ -220,23 +397,24 @@ def create_negative_for_positive(
         replacement_item_id = replacement["item_id"]
         negative_items = list(original_items)
         negative_items[swapped_item_index] = replacement_item_id
-        negative = {
-            "sample_id": f"{source_kit_id}_neg_{negative_number}",
-            "source_kit_id": source_kit_id,
-            "paired_positive_sample_id": sample_id,
-            "items": negative_items,
-            "label": 0,
-            "negative_metadata": {
-                "negative_type": NEGATIVE_TYPE,
-                "swapped_item_index": swapped_item_index,
-                "original_item_id": original_item_id,
-                "replacement_item_id": replacement_item_id,
-                "swap_category": master_category,
-                "replacement_kit_id": replacement["source_kit_id"],
+        return (
+            {
+                "sample_id": f"{source_kit_id}_neg_{negative_number}",
+                "source_kit_id": source_kit_id,
+                "paired_positive_sample_id": sample_id,
+                "items": negative_items,
+                "label": 0,
+                "negative_metadata": {
+                    "negative_type": NEGATIVE_TYPE,
+                    "swapped_item_index": swapped_item_index,
+                    "original_item_id": original_item_id,
+                    "replacement_item_id": replacement_item_id,
+                    "swap_category": master_category,
+                    "replacement_kit_id": replacement["source_kit_id"],
+                },
             },
-        }
-        return negative, None
-
+            None,
+        )
     return None, "no_valid_same_master_category_candidate"
 
 
@@ -247,7 +425,7 @@ def generate_negative_records(
     split: str,
     seed: int = DEFAULT_SEED,
 ) -> tuple[list[dict], dict]:
-    """Generate exactly one V1 negative attempt for every clean positive."""
+    """Generate exactly one Negative V1 attempt for every Core-7 V2 positive."""
 
     item_by_id, category_to_items = build_metadata_indexes(metadata, split=split)
     rng = random.Random(seed)
@@ -276,7 +454,6 @@ def generate_negative_records(
                     }
                 )
             continue
-
         negatives.append(negative)
         negative_metadata = negative["negative_metadata"]
         swapped_category_counts[negative_metadata["swap_category"]] += 1
@@ -288,23 +465,19 @@ def generate_negative_records(
         "processing_stage": "negative_sampling",
         "negative_version": NEGATIVE_VERSION,
         "negative_type": NEGATIVE_TYPE,
+        "category_mapping_version": CATEGORY_MAPPING_VERSION,
         "split": split,
         "seed": seed,
         "negatives_per_positive": 1,
         "positive_count": positive_count,
         "negative_count": negative_count,
         "failed_positive_count": positive_count - negative_count,
-        "generation_coverage": (
-            1.0 if positive_count == 0 else negative_count / positive_count
-        ),
+        "generation_coverage": 1.0 if positive_count == 0 else negative_count / positive_count,
         "failure_counts": dict(sorted(failure_counts.items())),
         "failure_examples": failure_examples,
-        "swapped_master_category_counts": dict(
-            sorted(swapped_category_counts.items())
-        ),
+        "swapped_master_category_counts": dict(sorted(swapped_category_counts.items())),
         "swapped_index_counts": {
-            str(index): count
-            for index, count in sorted(swapped_index_counts.items())
+            str(index): count for index, count in sorted(swapped_index_counts.items())
         },
         "pass": positive_count > 0 and negative_count == positive_count,
     }
@@ -315,8 +488,6 @@ def merge_positive_negative_families(
     positives: Sequence[dict],
     negatives: Sequence[dict],
 ) -> tuple[list[dict], dict]:
-    """Interleave each positive with its negative and preserve paired families."""
-
     negatives_by_positive: dict[str, list[dict]] = defaultdict(list)
     for negative in negatives:
         pair_id = str(negative.get("paired_positive_sample_id", ""))
@@ -325,7 +496,6 @@ def merge_positive_negative_families(
     scorer_records: list[dict] = []
     missing_pair_examples: list[str] = []
     multiple_pair_examples: list[str] = []
-
     for raw_positive in positives:
         positive = dict(raw_positive)
         positive_id = str(positive.get("sample_id", ""))
@@ -338,7 +508,6 @@ def merge_positive_negative_families(
             if len(multiple_pair_examples) < MAX_EXAMPLES:
                 multiple_pair_examples.append(positive_id)
             continue
-
         positive["paired_positive_sample_id"] = None
         scorer_records.append(positive)
         scorer_records.append(dict(family_negatives[0]))
@@ -389,7 +558,7 @@ def validate_scorer_split(
     split: str,
     min_items: int = DEFAULT_MIN_ITEMS,
 ) -> dict:
-    """Reconstruct every pair and independently validate all V1 invariants."""
+    """Reconstruct every pair and independently validate Negative V1 invariants."""
 
     item_by_id, _ = build_metadata_indexes(metadata, split=split)
     issue_counts: Counter[str] = Counter()
@@ -425,7 +594,6 @@ def validate_scorer_split(
                 sample_id=sample_id or f"line:{row_number}",
                 detail=str(missing_sample_fields),
             )
-
         if not sample_id or not source_kit_id:
             _add_issue(
                 issue_counts,
@@ -457,9 +625,7 @@ def validate_scorer_split(
                 sample_id=sample_id,
                 detail="items contains duplicate IDs",
             )
-        missing_metadata = [
-            item_id for item_id in item_ids if item_id not in item_by_id
-        ]
+        missing_metadata = [item_id for item_id in item_ids if item_id not in item_by_id]
         if missing_metadata:
             _add_issue(
                 issue_counts,
@@ -469,7 +635,6 @@ def validate_scorer_split(
                 sample_id=sample_id,
                 detail=str(missing_metadata[:10]),
             )
-
         if label not in (0, 1):
             _add_issue(
                 issue_counts,
@@ -620,7 +785,6 @@ def validate_scorer_split(
                 detail="negative_metadata must be an object",
             )
             continue
-
         required_negative_fields = {
             "negative_type",
             "swapped_item_index",
@@ -642,9 +806,7 @@ def validate_scorer_split(
             continue
 
         swapped_index = metadata_block["swapped_item_index"]
-        if not isinstance(swapped_index, int) or not (
-            0 <= swapped_index < len(positive_items)
-        ):
+        if not isinstance(swapped_index, int) or not (0 <= swapped_index < len(positive_items)):
             _add_issue(
                 issue_counts,
                 issue_examples,
@@ -779,9 +941,7 @@ def validate_scorer_split(
         "outfit_length_distribution": {
             str(length): count for length, count in sorted(outfit_length_counts.items())
         },
-        "swapped_master_category_counts": dict(
-            sorted(swapped_category_counts.items())
-        ),
+        "swapped_master_category_counts": dict(sorted(swapped_category_counts.items())),
         "issue_count": sum(issue_counts.values()),
         "issue_counts": dict(sorted(issue_counts.items())),
         "issue_examples": issue_examples,
@@ -802,20 +962,14 @@ def validate_all_splits(
     sampling_reports: Mapping[str, Mapping[str, object]],
     min_items: int = DEFAULT_MIN_ITEMS,
 ) -> dict:
-    """Run split validators plus global leakage and embedding gates."""
-
     split_reports: dict[str, dict] = {}
     source_kits_by_split: dict[str, set[str]] = {}
     item_ids_by_split: dict[str, set[str]] = {}
-
     for split in SPLITS:
         records = records_by_split[split]
         metadata = metadata_by_split[split]
         split_reports[split] = validate_scorer_split(
-            records,
-            metadata,
-            split=split,
-            min_items=min_items,
+            records, metadata, split=split, min_items=min_items
         )
         source_kits_by_split[split] = {
             str(record.get("source_kit_id", ""))
@@ -852,15 +1006,16 @@ def validate_all_splits(
     embedding_splits = embedding_report.get("splits", {})
     embedding_gate = bool(
         embedding_report.get("pass")
+        and embedding_report.get("category_mapping_version") == CATEGORY_MAPPING_VERSION
+        and isinstance(embedding_report.get("manifest"), Mapping)
+        and embedding_report["manifest"].get("pass")
         and all(
             embedding_splits.get(split, {}).get("pass")
             and embedding_splits.get(split, {}).get("embedding_coverage") == 1.0
             for split in SPLITS
         )
     )
-    sampling_gate = all(
-        bool(sampling_reports[split].get("pass")) for split in SPLITS
-    )
+    sampling_gate = all(bool(sampling_reports[split].get("pass")) for split in SPLITS)
     global_sample_ids = [
         str(record.get("sample_id", ""))
         for split in SPLITS
@@ -875,6 +1030,7 @@ def validate_all_splits(
     report = {
         "processing_stage": "final_scorer_dataset_validation",
         "dataset_version": DATASET_VERSION,
+        "category_mapping_version": CATEGORY_MAPPING_VERSION,
         "negative_version": NEGATIVE_VERSION,
         "min_items": min_items,
         "splits": split_reports,
@@ -885,9 +1041,7 @@ def validate_all_splits(
         "item_cross_split_count": cross_split_item_count,
         "item_cross_split_examples": cross_split_item_examples[:MAX_EXAMPLES],
         "global_duplicate_sample_id_count": len(global_duplicate_sample_ids),
-        "global_duplicate_sample_id_examples": global_duplicate_sample_ids[
-            :MAX_EXAMPLES
-        ],
+        "global_duplicate_sample_id_examples": global_duplicate_sample_ids[:MAX_EXAMPLES],
     }
     report["pass"] = bool(
         all(split_report["pass"] for split_report in split_reports.values())
@@ -911,11 +1065,11 @@ def build_manifests(
     validation_report: Mapping[str, object],
     embedding_report_path: Path,
     embedding_report: Mapping[str, object],
+    embedding_input_verification: Mapping[str, object],
     seed: int,
-    git_commit: str | None = None,
+    git_commit: str,
+    git_tree_clean: bool,
 ) -> tuple[dict, dict]:
-    """Create immutable file references and the final dataset contract."""
-
     split_entries: dict[str, dict] = {}
     for split in SPLITS:
         records = records_by_split[split]
@@ -939,73 +1093,114 @@ def build_manifests(
         }
 
     split_manifest = {
-        "manifest_version": "split-manifest-v1",
+        "manifest_version": "split-manifest-v2",
         "dataset_version": DATASET_VERSION,
         "source_dataset": "codewaly/polyvore1000",
         "split_policy": "official_train_valid_test",
         "splits": split_entries,
     }
     cache_report = embedding_report.get("cache", {})
+    manifest_report = embedding_report.get("manifest", {})
     dataset_manifest = {
-        "manifest_version": "dataset-manifest-v1",
+        "manifest_version": "dataset-manifest-v2",
         "dataset_version": DATASET_VERSION,
         "status": validation_report["status"],
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "git_commit": git_commit,
+        "git_tree_clean": git_tree_clean,
         "source_dataset": "codewaly/polyvore1000",
         "data_contract_version": "data-contract-v1.0",
-        "category_mapping_version": "core7-v1",
-        "item_metadata_version": "core7-item-metadata-v1",
-        "embedding_version": "fashionclip-512-l2-v1",
+        "category_mapping_version": CATEGORY_MAPPING_VERSION,
+        "category_mapping_sha256": embedding_input_verification.get(
+            "category_mapping_sha256"
+        ),
+        "category_mapping_base_sha256": embedding_input_verification.get(
+            "category_mapping_base_sha256"
+        ),
+        "resolved_mapping_sha256": embedding_input_verification.get(
+            "resolved_mapping_sha256"
+        ),
+        "item_metadata_version": ITEM_METADATA_VERSION,
+        "embedding_version": embedding_report.get("embedding_version"),
         "embedding_model": cache_report.get("model_id"),
+        "embedding_preprocessing_version": manifest_report.get("preprocessing_version"),
         "embedding_dimension": cache_report.get("embedding_dim"),
-        "embedding_normalization": "l2",
+        "embedding_dtype": cache_report.get("embedding_dtype"),
+        "embedding_normalization": manifest_report.get("normalization"),
         "embedding_validation_report": str(embedding_report_path),
+        "embedding_validation_report_sha256": sha256_file(embedding_report_path),
+        "embedding_cache_sha256": embedding_input_verification.get(
+            "embedding_cache_sha256"
+        ),
+        "embedding_manifest_sha256": embedding_input_verification.get(
+            "embedding_manifest_sha256"
+        ),
+        "negative_protocol_version": NEGATIVE_VERSION,
         "negative_version": NEGATIVE_VERSION,
         "negative_type": NEGATIVE_TYPE,
         "negative_seed": seed,
         "negatives_per_positive": 1,
         "minimum_outfit_items": DEFAULT_MIN_ITEMS,
-        "split_manifest": str(output_dir / "split_manifest_v1.json"),
-        "final_validation_report": str(output_dir / "final_validation_v1.json"),
+        "split_manifest": str(output_dir / "split_manifest_v2.json"),
+        "final_validation_report": str(output_dir / "final_validation_v2.json"),
         "splits": split_entries,
     }
     return split_manifest, dataset_manifest
 
 
-def build_scorer_dataset_v1(
+def build_scorer_dataset_v2(
     *,
     data_dir: Path | str,
     output_dir: Path | str,
     embedding_report_path: Path | str,
+    category_mapping_path: Path | str,
+    embedding_cache_path: Path | str,
+    embedding_manifest_path: Path | str,
+    repo_root: Path | str,
     seed: int = DEFAULT_SEED,
-    git_commit: str | None = None,
     overwrite: bool = False,
 ) -> dict:
-    """Generate negatives, merge pairs, validate everything, and freeze V1."""
+    """Verify NB3 evidence, generate negatives, validate, and freeze dataset V2."""
 
+    git_provenance = inspect_git_provenance(repo_root)
+    frozen_commit = require_freeze_git_provenance(
+        git_commit=git_provenance["git_commit"],
+        git_tree_clean=git_provenance["git_tree_clean"],
+    )
+    frozen_repo_root = Path(repo_root).expanduser().resolve()
+    freeze_source = frozen_repo_root / "src/data/build_core7_scorer_dataset.py"
+    if not freeze_source.is_file():
+        raise ValueError(
+            "BLOCKED: repo_root is not the Core-7 project repository, so the "
+            "recorded Git commit cannot reproduce this builder."
+        )
     source_dir = Path(data_dir)
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
     protected_outputs = [
         *(destination / f"negative_v1_{split}.jsonl" for split in SPLITS),
-        *(destination / f"scorer_ready_v1_{split}.jsonl" for split in SPLITS),
-        destination / "final_validation_v1.json",
-        destination / "split_manifest_v1.json",
-        destination / "dataset_manifest_v1.json",
+        *(destination / f"scorer_ready_v2_{split}.jsonl" for split in SPLITS),
+        destination / "final_validation_v2.json",
+        destination / "split_manifest_v2.json",
+        destination / "dataset_manifest_v2.json",
     ]
     existing_outputs = [path for path in protected_outputs if path.exists()]
     if existing_outputs and not overwrite:
         raise FileExistsError(
             "Refusing to overwrite versioned dataset artifacts. Existing files: "
             f"{[str(path) for path in existing_outputs]}. "
-            "Use a new dataset version, or pass overwrite=True only during "
-            "pre-freeze development."
+            "Use a new dataset version, or pass overwrite=True only during pre-freeze development."
         )
+
     embedding_path = Path(embedding_report_path)
     embedding_report = read_json(embedding_path)
-    if not embedding_report.get("pass"):
-        raise ValueError("Embedding validation report is not PASS")
+    embedding_input_verification = verify_embedding_report_inputs(
+        embedding_report,
+        data_dir=source_dir,
+        category_mapping_path=category_mapping_path,
+        embedding_cache_path=embedding_cache_path,
+        embedding_manifest_path=embedding_manifest_path,
+    )
 
     records_by_split: dict[str, list[dict]] = {}
     metadata_by_split: dict[str, list[dict]] = {}
@@ -1016,29 +1211,21 @@ def build_scorer_dataset_v1(
     metadata_paths: dict[str, Path] = {}
 
     for split_index, split in enumerate(SPLITS):
-        # A deterministic derived seed prevents identical RNG streams per split.
         split_seed = seed + split_index
         positive_path = source_dir / f"category_clean_{split}.jsonl"
         metadata_path = source_dir / f"core7_item_metadata_v1_{split}.jsonl"
         positives = read_jsonl(positive_path)
         metadata = read_jsonl(metadata_path)
-
         negatives, sampling_report = generate_negative_records(
-            positives,
-            metadata,
-            split=split,
-            seed=split_seed,
+            positives, metadata, split=split, seed=split_seed
         )
         scorer_records, merge_report = merge_positive_negative_families(
-            positives,
-            negatives,
+            positives, negatives
         )
 
         negative_path = destination / f"negative_v1_{split}.jsonl"
-        scorer_path = destination / f"scorer_ready_v1_{split}.jsonl"
-        sampling_report_path = (
-            destination / f"negative_sampling_v1_{split}_report.json"
-        )
+        scorer_path = destination / f"scorer_ready_v2_{split}.jsonl"
+        sampling_report_path = destination / f"negative_sampling_v1_{split}_report.json"
         write_jsonl(negatives, negative_path)
         write_jsonl(scorer_records, scorer_path)
         sampling_report["output_path"] = str(negative_path)
@@ -1059,8 +1246,9 @@ def build_scorer_dataset_v1(
         embedding_report=embedding_report,
         sampling_reports=sampling_reports,
     )
+    final_report["embedding_input_verification"] = embedding_input_verification
     final_report["merge_reports"] = merge_reports
-    final_report_path = destination / "final_validation_v1.json"
+    final_report_path = destination / "final_validation_v2.json"
     write_json(final_report, final_report_path)
 
     split_manifest, dataset_manifest = build_manifests(
@@ -1072,17 +1260,20 @@ def build_scorer_dataset_v1(
         validation_report=final_report,
         embedding_report_path=embedding_path,
         embedding_report=embedding_report,
+        embedding_input_verification=embedding_input_verification,
         seed=seed,
-        git_commit=git_commit,
+        git_commit=frozen_commit,
+        git_tree_clean=True,
     )
-    split_manifest_path = destination / "split_manifest_v1.json"
-    dataset_manifest_path = destination / "dataset_manifest_v1.json"
+    split_manifest_path = destination / "split_manifest_v2.json"
+    dataset_manifest_path = destination / "dataset_manifest_v2.json"
     write_json(split_manifest, split_manifest_path)
     write_json(dataset_manifest, dataset_manifest_path)
 
     return {
         "status": final_report["status"],
         "dataset_version": DATASET_VERSION,
+        "category_mapping_version": CATEGORY_MAPPING_VERSION,
         "negative_version": NEGATIVE_VERSION,
         "seed": seed,
         "sampling_reports": sampling_reports,
@@ -1092,27 +1283,43 @@ def build_scorer_dataset_v1(
     }
 
 
+# Backward import compatibility for code that has not yet changed the symbol name.
+# The semantics on this branch are V2 and the additional embedding paths are required.
+build_scorer_dataset_v1 = build_scorer_dataset_v2
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Build and validate the Core-7 scorer-ready dataset V1"
+        description="Build and validate the Core-7 V2 scorer-ready dataset"
     )
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--embedding-report", type=Path, required=True)
+    parser.add_argument("--category-mapping", type=Path, required=True)
+    parser.add_argument("--embedding-cache", type=Path, required=True)
+    parser.add_argument("--embedding-manifest", type=Path, required=True)
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path.cwd(),
+        help="Git repository to bind to the official dataset freeze (default: cwd)",
+    )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    parser.add_argument("--git-commit", default=None)
     parser.add_argument("--overwrite", action="store_true")
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _build_arg_parser().parse_args(argv)
-    result = build_scorer_dataset_v1(
+    result = build_scorer_dataset_v2(
         data_dir=args.data_dir,
         output_dir=args.output_dir,
         embedding_report_path=args.embedding_report,
+        category_mapping_path=args.category_mapping,
+        embedding_cache_path=args.embedding_cache,
+        embedding_manifest_path=args.embedding_manifest,
+        repo_root=args.repo_root,
         seed=args.seed,
-        git_commit=args.git_commit,
         overwrite=args.overwrite,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
