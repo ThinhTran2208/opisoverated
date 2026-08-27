@@ -19,6 +19,7 @@ ENV_PROJECT_ROOT = "FASHION_PROJECT_ROOT"
 ENV_PATHS_CONFIG = "FASHION_PATHS_CONFIG"
 ENV_ARTIFACT_ROOT = "FASHION_ARTIFACT_ROOT"
 ENV_EMBEDDING_CACHE = "FASHION_EMBEDDING_CACHE"
+ENV_EMBEDDING_MANIFEST = "FASHION_EMBEDDING_MANIFEST"
 ENV_CORE7_DIR = "FASHION_CORE7_DIR"
 ENV_SCORER_READY_DIR = "FASHION_SCORER_READY_DIR"
 
@@ -31,6 +32,7 @@ class RuntimePaths:
     config_path: Path
     artifact_root: Path
     embedding_cache: Path
+    embedding_manifest: Path
     core7_dir: Path
     scorer_ready_dir: Path
 
@@ -95,17 +97,24 @@ def load_runtime_paths(
         ),
         artifact_root,
     )
+    embedding_manifest = _resolve_path(
+        environment.get(
+            ENV_EMBEDDING_MANIFEST,
+            str(payload.get("embedding_manifest", "cache/embedding_manifest_v1.json")),
+        ),
+        artifact_root,
+    )
     core7_dir = _resolve_path(
         environment.get(
             ENV_CORE7_DIR,
-            str(payload.get("core7_dir", "core7_drop_v1")),
+            str(payload.get("core7_dir", "core7_drop_v2")),
         ),
         artifact_root,
     )
     scorer_ready_dir = _resolve_path(
         environment.get(
             ENV_SCORER_READY_DIR,
-            str(payload.get("scorer_ready_dir", "scorer_ready_v1")),
+            str(payload.get("scorer_ready_dir", "scorer_ready_v2")),
         ),
         artifact_root,
     )
@@ -115,6 +124,7 @@ def load_runtime_paths(
         config_path=selected_config,
         artifact_root=artifact_root,
         embedding_cache=embedding_cache,
+        embedding_manifest=embedding_manifest,
         core7_dir=core7_dir,
         scorer_ready_dir=scorer_ready_dir,
     )
