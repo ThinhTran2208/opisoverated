@@ -747,9 +747,9 @@ Ví dụ:
 
 ```json
 {
-  "dataset_version": "polyvore-compat-v1",
-  "negative_protocol_version": "same-category-different-kit-v1",
-  "category_mapping_version": "coarse-category-v1",
+  "dataset_version": "polyvore1000-core7-compat-v2",
+  "negative_protocol_version": "negative-v1",
+  "category_mapping_version": "core7-v2",
   "embedding_version": "fashionclip-512-l2-v1",
   "scorer_version": "type-aware-v1",
   "calibration_version": "calibration-v1"

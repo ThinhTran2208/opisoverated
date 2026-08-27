@@ -26,6 +26,21 @@ giữa các experiment.
 Các category-policy thay đổi trong PR #3 được version thành `core7-v2` và output
 được ghi sang folder V2 riêng.
 
+## Version canonical
+
+Mỗi loại artifact có namespace riêng; không dùng mapping version thay cho
+dataset version:
+
+```text
+dataset_version          = polyvore1000-core7-compat-v2
+category_mapping_version = core7-v2
+negative_protocol_version = negative-v1
+embedding_version        = fashionclip-512-l2-v1
+```
+
+`dataset_version` mô tả toàn bộ benchmark đã build. Ba version còn lại mô tả
+đúng component tương ứng và được ghi riêng trong manifest.
+
 ## Embedding manifest bắt buộc
 
 FashionCLIP cache không đủ để xác định provenance chỉ bằng shape `[N, 512]`.
@@ -71,6 +86,12 @@ NB3 ghi SHA-256 của exact inputs vào embedding-validation report. Vì Core-7 
 là override trên V1, report bind cả file V2, frozen V1 base và resolved mapping.
 NB4 phải hash lại mapping, cache, manifest, positives và metadata; bất kỳ
 mismatch nào đều hard-fail trước negative sampling.
+
+Official freeze còn yêu cầu `git rev-parse --verify HEAD` thành công và
+`git status --porcelain` không có entry. Nếu thiếu commit hoặc working tree
+dirty, NB4 hard-fail trước khi tạo output và không được ghi
+`READY_TO_TRAIN`. `dataset_manifest_v2.json` phải lưu exact `git_commit` và
+`git_tree_clean = true`.
 
 Người chạy có thể đặt `artifact_root` ở bất kỳ đâu và khai báo qua
 `FASHION_ARTIFACT_ROOT` hoặc `configs/data_paths.local.json`.

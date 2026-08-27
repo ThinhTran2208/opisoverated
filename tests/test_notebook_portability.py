@@ -42,6 +42,25 @@ class NotebookPortabilityTests(unittest.TestCase):
         self.assertIn("/data/", lines)
         self.assertNotIn("data/", lines)
 
+    def test_nb4_requires_live_clean_git_provenance_for_freeze(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        notebook = json.loads(
+            (
+                repo_root
+                / "notebooks/experiments/NB4_build_core7_scorer_dataset_v1.ipynb"
+            ).read_text(encoding="utf-8")
+        )
+        code = "\n".join(
+            "".join(cell.get("source", []))
+            for cell in notebook["cells"]
+            if cell.get("cell_type") == "code"
+        )
+
+        self.assertIn("inspect_git_provenance(REPO_ROOT)", code)
+        self.assertIn("GIT_TREE_CLEAN", code)
+        self.assertIn("repo_root=REPO_ROOT", code)
+        self.assertIn("BLOCKED", code)
+
 
 if __name__ == "__main__":
     unittest.main()

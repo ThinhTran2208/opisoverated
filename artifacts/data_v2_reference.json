@@ -12,6 +12,7 @@
   "category_mapping_version": "core7-v2",
   "item_metadata_version": "core7-item-metadata-v1",
   "negative_protocol_version": "negative-v1",
+  "embedding_version": "fashionclip-512-l2-v1",
   "embedding_manifest_template": "artifacts/embedding_manifest_v1.example.json",
   "required_generation_order": [
     "NB2_core7_drop_and_clean_positives.ipynb",
@@ -25,7 +26,8 @@
     "scorer_ready_dir": "scorer_ready_v2"
   },
   "freeze_fields_after_rebuild": {
-    "generation_commit": null,
+    "git_commit": null,
+    "git_tree_clean": null,
     "mapping_sha256": null,
     "base_mapping_sha256": null,
     "resolved_mapping_sha256": null,

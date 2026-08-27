@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import json
 import random
+import subprocess
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,7 +25,9 @@ from .validate_core7_embeddings import fingerprint_category_mapping
 
 
 SPLITS = ("train", "valid", "test")
-DATASET_VERSION = "polyvore1000-core7-compat-v2"
+DATASET_VERSION_V1 = "polyvore1000-core7-compat-v1"
+DATASET_VERSION_V2 = "polyvore1000-core7-compat-v2"
+DATASET_VERSION = DATASET_VERSION_V2
 CATEGORY_MAPPING_VERSION = "core7-v2"
 ITEM_METADATA_VERSION = "core7-item-metadata-v1"
 NEGATIVE_VERSION = "negative-v1"
@@ -32,6 +35,68 @@ NEGATIVE_TYPE = "same_category_different_kit"
 DEFAULT_SEED = 42
 DEFAULT_MIN_ITEMS = 3
 MAX_EXAMPLES = 50
+
+
+def inspect_git_provenance(repo_root: Path | str) -> dict:
+    """Return the exact commit and working-tree state used for an official freeze."""
+
+    root = Path(repo_root).expanduser().resolve()
+    try:
+        commit = subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "--verify", "HEAD"],
+            text=True,
+            stderr=subprocess.STDOUT,
+        ).strip()
+        porcelain = subprocess.check_output(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            text=True,
+            stderr=subprocess.STDOUT,
+        )
+    except FileNotFoundError:
+        return {
+            "git_commit": None,
+            "git_tree_clean": False,
+            "dirty_entry_count": 0,
+            "dirty_entry_examples": [],
+            "error": "Git executable is unavailable.",
+        }
+    except subprocess.CalledProcessError as error:
+        detail = (error.output or "").strip()
+        return {
+            "git_commit": None,
+            "git_tree_clean": False,
+            "dirty_entry_count": 0,
+            "dirty_entry_examples": [],
+            "error": detail or f"Unable to inspect Git repository at {root}.",
+        }
+
+    dirty_entries = [line for line in porcelain.splitlines() if line.strip()]
+    return {
+        "git_commit": commit or None,
+        "git_tree_clean": bool(commit and not dirty_entries),
+        "dirty_entry_count": len(dirty_entries),
+        "dirty_entry_examples": dirty_entries[:MAX_EXAMPLES],
+        "error": None if commit else "Git HEAD did not resolve to a commit.",
+    }
+
+
+def require_freeze_git_provenance(
+    *, git_commit: str | None, git_tree_clean: bool | None
+) -> str:
+    """Hard-fail an official dataset freeze that cannot be reproduced from Git."""
+
+    normalized_commit = str(git_commit or "").strip()
+    if not normalized_commit:
+        raise ValueError(
+            "BLOCKED: an official dataset freeze requires a resolvable Git commit; "
+            "READY_TO_TRAIN was not created."
+        )
+    if git_tree_clean is not True:
+        raise ValueError(
+            "BLOCKED: an official dataset freeze requires a clean Git working tree; "
+            "commit or discard local changes before creating READY_TO_TRAIN."
+        )
+    return normalized_commit
 
 
 def read_json(path: Path | str) -> dict:
@@ -1002,7 +1067,8 @@ def build_manifests(
     embedding_report: Mapping[str, object],
     embedding_input_verification: Mapping[str, object],
     seed: int,
-    git_commit: str | None = None,
+    git_commit: str,
+    git_tree_clean: bool,
 ) -> tuple[dict, dict]:
     split_entries: dict[str, dict] = {}
     for split in SPLITS:
@@ -1041,6 +1107,7 @@ def build_manifests(
         "status": validation_report["status"],
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "git_commit": git_commit,
+        "git_tree_clean": git_tree_clean,
         "source_dataset": "codewaly/polyvore1000",
         "data_contract_version": "data-contract-v1.0",
         "category_mapping_version": CATEGORY_MAPPING_VERSION,
@@ -1068,6 +1135,7 @@ def build_manifests(
         "embedding_manifest_sha256": embedding_input_verification.get(
             "embedding_manifest_sha256"
         ),
+        "negative_protocol_version": NEGATIVE_VERSION,
         "negative_version": NEGATIVE_VERSION,
         "negative_type": NEGATIVE_TYPE,
         "negative_seed": seed,
@@ -1088,12 +1156,24 @@ def build_scorer_dataset_v2(
     category_mapping_path: Path | str,
     embedding_cache_path: Path | str,
     embedding_manifest_path: Path | str,
+    repo_root: Path | str,
     seed: int = DEFAULT_SEED,
-    git_commit: str | None = None,
     overwrite: bool = False,
 ) -> dict:
     """Verify NB3 evidence, generate negatives, validate, and freeze dataset V2."""
 
+    git_provenance = inspect_git_provenance(repo_root)
+    frozen_commit = require_freeze_git_provenance(
+        git_commit=git_provenance["git_commit"],
+        git_tree_clean=git_provenance["git_tree_clean"],
+    )
+    frozen_repo_root = Path(repo_root).expanduser().resolve()
+    freeze_source = frozen_repo_root / "src/data/build_core7_scorer_dataset.py"
+    if not freeze_source.is_file():
+        raise ValueError(
+            "BLOCKED: repo_root is not the Core-7 project repository, so the "
+            "recorded Git commit cannot reproduce this builder."
+        )
     source_dir = Path(data_dir)
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
@@ -1182,7 +1262,8 @@ def build_scorer_dataset_v2(
         embedding_report=embedding_report,
         embedding_input_verification=embedding_input_verification,
         seed=seed,
-        git_commit=git_commit,
+        git_commit=frozen_commit,
+        git_tree_clean=True,
     )
     split_manifest_path = destination / "split_manifest_v2.json"
     dataset_manifest_path = destination / "dataset_manifest_v2.json"
@@ -1217,8 +1298,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--category-mapping", type=Path, required=True)
     parser.add_argument("--embedding-cache", type=Path, required=True)
     parser.add_argument("--embedding-manifest", type=Path, required=True)
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path.cwd(),
+        help="Git repository to bind to the official dataset freeze (default: cwd)",
+    )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    parser.add_argument("--git-commit", default=None)
     parser.add_argument("--overwrite", action="store_true")
     return parser
 
@@ -1232,8 +1318,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         category_mapping_path=args.category_mapping,
         embedding_cache_path=args.embedding_cache,
         embedding_manifest_path=args.embedding_manifest,
+        repo_root=args.repo_root,
         seed=args.seed,
-        git_commit=args.git_commit,
         overwrite=args.overwrite,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))

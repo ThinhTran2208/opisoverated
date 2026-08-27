@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "artifact_name": "polyvore-core7-scorer-data",
-  "dataset_version": "core7-v1",
+  "dataset_version": "polyvore1000-core7-compat-v1",
   "status": "PRESERVE_DO_NOT_OVERWRITE",
   "owner": "bootcamp-project-team",
   "storage": {
@@ -9,5 +9,9 @@
     "folder_url": "https://drive.google.com/drive/folders/1SgTNlUz9fUWtfOoJP1tFoS1zM2iU60DQ"
   },
   "related_config": "configs/category_mapping_core7_v1.json",
+  "category_mapping_version": "core7-v1",
+  "item_metadata_version": "core7-item-metadata-v1",
+  "negative_protocol_version": "negative-v1",
+  "embedding_version": "fashionclip-512-l2-v1",
   "notes": "Core-7 V1 mapping is frozen and restored unchanged. Do not rebuild V1 with the PR #3 category-policy changes. Those changes belong to Core-7 V2 and must be generated into separate V2 artifact paths."
 }

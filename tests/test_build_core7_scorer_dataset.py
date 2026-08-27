@@ -1,14 +1,18 @@
 """Tests for Core-7 V2 negative sampling, merge, and final validation."""
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from src.data.build_core7_scorer_dataset import (
+    DATASET_VERSION_V2,
     NEGATIVE_TYPE,
+    NEGATIVE_VERSION,
     build_scorer_dataset_v2,
     generate_negative_records,
+    inspect_git_provenance,
     merge_positive_negative_families,
     sha256_file,
     validate_all_splits,
@@ -273,6 +277,39 @@ class Core7ScorerDatasetTests(unittest.TestCase):
         self.assertTrue(report["pass"])
         self.assertEqual(report["status"], "READY_TO_TRAIN")
 
+    def _write_clean_git_repo(self, root: Path) -> Path:
+        repo_root = root / "repo"
+        repo_root.mkdir()
+        subprocess.run(["git", "init", "--quiet"], cwd=repo_root, check=True)
+        tracked = repo_root / "tracked.txt"
+        tracked.write_text("clean\n", encoding="utf-8")
+        source = repo_root / "src/data/build_core7_scorer_dataset.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("# unit-test builder marker\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "tracked.txt", source.relative_to(repo_root).as_posix()],
+            cwd=repo_root,
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Unit Test",
+                "-c",
+                "user.email=unit@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "initial",
+            ],
+            cwd=repo_root,
+            check=True,
+        )
+        return repo_root
+
     def _write_end_to_end_inputs(self, root: Path):
         data_dir = root / "input"
         output_dir = root / "output"
@@ -315,6 +352,7 @@ class Core7ScorerDatasetTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        repo_root = self._write_clean_git_repo(root)
         return (
             data_dir,
             output_dir,
@@ -322,6 +360,7 @@ class Core7ScorerDatasetTests(unittest.TestCase):
             manifest_path,
             mapping_path,
             embedding_report_path,
+            repo_root,
         )
 
     def test_end_to_end_builder_writes_ready_v2_manifests(self):
@@ -334,6 +373,7 @@ class Core7ScorerDatasetTests(unittest.TestCase):
                 manifest_path,
                 mapping_path,
                 embedding_report_path,
+                repo_root,
             ) = self._write_end_to_end_inputs(root)
 
             result = build_scorer_dataset_v2(
@@ -343,7 +383,7 @@ class Core7ScorerDatasetTests(unittest.TestCase):
                 category_mapping_path=mapping_path,
                 embedding_cache_path=cache_path,
                 embedding_manifest_path=manifest_path,
-                git_commit="unit-test",
+                repo_root=repo_root,
             )
 
             self.assertEqual(result["status"], "READY_TO_TRAIN")
@@ -354,7 +394,16 @@ class Core7ScorerDatasetTests(unittest.TestCase):
                 (output_dir / "dataset_manifest_v2.json").read_text(encoding="utf-8")
             )
             self.assertEqual(manifest["status"], "READY_TO_TRAIN")
+            self.assertEqual(manifest["dataset_version"], DATASET_VERSION_V2)
+            self.assertEqual(
+                manifest["git_commit"],
+                inspect_git_provenance(repo_root)["git_commit"],
+            )
+            self.assertIs(manifest["git_tree_clean"], True)
             self.assertEqual(manifest["category_mapping_version"], "core7-v2")
+            self.assertEqual(
+                manifest["negative_protocol_version"], NEGATIVE_VERSION
+            )
             self.assertEqual(manifest["negative_seed"], 42)
             self.assertEqual(
                 manifest["embedding_cache_sha256"], sha256_file(cache_path)
@@ -370,6 +419,7 @@ class Core7ScorerDatasetTests(unittest.TestCase):
                 manifest_path,
                 mapping_path,
                 embedding_report_path,
+                repo_root,
             ) = self._write_end_to_end_inputs(root)
 
             with (data_dir / "category_clean_train.jsonl").open(
@@ -385,7 +435,7 @@ class Core7ScorerDatasetTests(unittest.TestCase):
                     category_mapping_path=mapping_path,
                     embedding_cache_path=cache_path,
                     embedding_manifest_path=manifest_path,
-                    git_commit="unit-test",
+                    repo_root=repo_root,
                 )
 
     def test_builder_rejects_stale_embedding_report_after_mapping_changes(self):
@@ -398,6 +448,7 @@ class Core7ScorerDatasetTests(unittest.TestCase):
                 manifest_path,
                 mapping_path,
                 embedding_report_path,
+                repo_root,
             ) = self._write_end_to_end_inputs(root)
 
             payload = json.loads(mapping_path.read_text(encoding="utf-8"))
@@ -412,7 +463,7 @@ class Core7ScorerDatasetTests(unittest.TestCase):
                     category_mapping_path=mapping_path,
                     embedding_cache_path=cache_path,
                     embedding_manifest_path=manifest_path,
-                    git_commit="unit-test",
+                    repo_root=repo_root,
                 )
 
     def test_builder_rejects_stale_report_after_base_mapping_changes(self):
@@ -425,6 +476,7 @@ class Core7ScorerDatasetTests(unittest.TestCase):
                 manifest_path,
                 mapping_path,
                 embedding_report_path,
+                repo_root,
             ) = self._write_end_to_end_inputs(root)
 
             v2_payload = json.loads(mapping_path.read_text(encoding="utf-8"))
@@ -441,8 +493,78 @@ class Core7ScorerDatasetTests(unittest.TestCase):
                     category_mapping_path=mapping_path,
                     embedding_cache_path=cache_path,
                     embedding_manifest_path=manifest_path,
-                    git_commit="unit-test",
+                    repo_root=repo_root,
                 )
+
+    def test_builder_blocks_missing_commit_before_creating_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (
+                data_dir,
+                output_dir,
+                cache_path,
+                manifest_path,
+                mapping_path,
+                embedding_report_path,
+                repo_root,
+            ) = self._write_end_to_end_inputs(root)
+
+            with self.assertRaisesRegex(ValueError, "Git commit"):
+                build_scorer_dataset_v2(
+                    data_dir=data_dir,
+                    output_dir=output_dir,
+                    embedding_report_path=embedding_report_path,
+                    category_mapping_path=mapping_path,
+                    embedding_cache_path=cache_path,
+                    embedding_manifest_path=manifest_path,
+                    repo_root=root / "not-a-git-repository",
+                )
+
+            self.assertFalse(output_dir.exists())
+
+    def test_builder_blocks_dirty_tree_before_creating_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (
+                data_dir,
+                output_dir,
+                cache_path,
+                manifest_path,
+                mapping_path,
+                embedding_report_path,
+                repo_root,
+            ) = self._write_end_to_end_inputs(root)
+
+            (repo_root / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "clean Git working tree"):
+                build_scorer_dataset_v2(
+                    data_dir=data_dir,
+                    output_dir=output_dir,
+                    embedding_report_path=embedding_report_path,
+                    category_mapping_path=mapping_path,
+                    embedding_cache_path=cache_path,
+                    embedding_manifest_path=manifest_path,
+                    repo_root=repo_root,
+                )
+
+            self.assertFalse(output_dir.exists())
+
+    def test_git_provenance_detects_clean_and_dirty_tree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo_root = self._write_clean_git_repo(root)
+
+            clean = inspect_git_provenance(repo_root)
+            self.assertTrue(clean["git_commit"])
+            self.assertIs(clean["git_tree_clean"], True)
+            self.assertEqual(clean["dirty_entry_count"], 0)
+
+            (repo_root / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+            dirty = inspect_git_provenance(repo_root)
+            self.assertIs(dirty["git_tree_clean"], False)
+            self.assertEqual(dirty["dirty_entry_count"], 1)
+            self.assertIn("tracked.txt", dirty["dirty_entry_examples"][0])
 
 
 if __name__ == "__main__":
