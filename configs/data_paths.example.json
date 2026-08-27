@@ -1,6 +1,7 @@
 {
   "artifact_root": "./data",
   "embedding_cache": "cache/fashionclip_item_embeddings.pt",
-  "core7_dir": "core7_drop_v1",
-  "scorer_ready_dir": "scorer_ready_v1"
+  "embedding_manifest": "cache/embedding_manifest_v1.json",
+  "core7_dir": "core7_drop_v2",
+  "scorer_ready_dir": "scorer_ready_v2"
 }
