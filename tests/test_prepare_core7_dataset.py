@@ -12,6 +12,7 @@ from src.data.prepare_core7_dataset import (
     validate_clean_positive_samples,
     validate_mapping_coverage,
 )
+from src.data.prepare_core7_dataset_v2 import load_category_mapping_v2
 
 
 class Core7DropTests(unittest.TestCase):
@@ -64,39 +65,46 @@ class Core7DropTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "decision_counts"):
                 load_category_mapping(path)
 
-    def test_production_mapping_locks_v1_scope(self):
-        mapping_path = (
-            Path(__file__).resolve().parents[1]
-            / "configs"
-            / "category_mapping_core7_v1.json"
+    def test_frozen_v1_is_preserved_and_v2_contains_policy_changes(self):
+        root = Path(__file__).resolve().parents[1]
+        v1_metadata, v1 = load_category_mapping(
+            root / "configs" / "category_mapping_core7_v1.json"
         )
-        metadata, mapping = load_category_mapping(mapping_path)
+        v2_metadata, v2 = load_category_mapping_v2(
+            root / "configs" / "category_mapping_core7_v2.json"
+        )
 
-        self.assertEqual(metadata["mapping_version"], "core7-v1")
-        self.assertEqual(metadata["status"], "frozen")
+        self.assertEqual(v1_metadata["mapping_version"], "core7-v1")
+        self.assertEqual(v1_metadata["status"], "frozen")
+        self.assertEqual(v2_metadata["mapping_version"], "core7-v2")
+        self.assertEqual(v2_metadata["status"], "frozen")
+        self.assertEqual(v2_metadata["base_mapping_version"], "core7-v1")
+        self.assertEqual(len(v1), len(v2))
 
-        for category in (
-            "Activewear Jackets",
-            "Activewear Pants",
-            "Activewear Shorts",
-            "Activewear Skirts",
-            "Activewear Tank Tops",
-            "Activewear Tops",
-            "Bags & Cases",
-            "Camisoles",
-            "Men's Activewear Jackets",
-            "Men's Activewear Pants",
-            "Men's Activewear Shorts",
-            "Men's Activewear Tops",
-            "Men's Bags & Wallets",
-        ):
-            self.assertEqual(mapping[category], "DROP")
+        changed_to_drop = {
+            "Activewear Jackets": "OUTERWEAR",
+            "Activewear Pants": "BOTTOM",
+            "Activewear Shorts": "BOTTOM",
+            "Activewear Skirts": "BOTTOM",
+            "Activewear Tank Tops": "TOP",
+            "Activewear Tops": "TOP",
+            "Bags & Cases": "BAG",
+            "Camisoles": "TOP",
+            "Men's Activewear Jackets": "OUTERWEAR",
+            "Men's Activewear Pants": "BOTTOM",
+            "Men's Activewear Shorts": "BOTTOM",
+            "Men's Activewear Tops": "TOP",
+            "Men's Bags & Wallets": "BAG",
+        }
+        for category, v1_decision in changed_to_drop.items():
+            self.assertEqual(v1[category], v1_decision)
+            self.assertEqual(v2[category], "DROP")
 
-        self.assertEqual(mapping["Athletic Shoes"], "SHOES")
-        self.assertEqual(mapping["Men's Athletic Shoes"], "SHOES")
-        self.assertEqual(mapping["Men's Bags"], "BAG")
-        self.assertEqual(mapping["Slippers"], "SHOES")
-        self.assertEqual(mapping["Men's Slippers"], "SHOES")
+        self.assertEqual(v2["Athletic Shoes"], "SHOES")
+        self.assertEqual(v2["Men's Athletic Shoes"], "SHOES")
+        self.assertEqual(v2["Men's Bags"], "BAG")
+        self.assertEqual(v2["Slippers"], "SHOES")
+        self.assertEqual(v2["Men's Slippers"], "SHOES")
 
     def test_mapping_must_cover_every_observed_category(self):
         with self.assertRaisesRegex(ValueError, "Missing master categories"):
@@ -106,10 +114,7 @@ class Core7DropTests(unittest.TestCase):
             )
 
     def test_filter_drops_items_and_preserves_order(self):
-        filtered, report = filter_items_by_core_category(
-            self.raw_items,
-            self.mapping,
-        )
+        filtered, report = filter_items_by_core_category(self.raw_items, self.mapping)
 
         self.assertEqual(
             [item["item_id"] for item in filtered["kit_a"]],
@@ -124,10 +129,7 @@ class Core7DropTests(unittest.TestCase):
         self.assertEqual(report["dropped_item_count"], 2)
 
     def test_clean_positives_keep_only_outfits_with_three_items(self):
-        filtered, _ = filter_items_by_core_category(
-            self.raw_items,
-            self.mapping,
-        )
+        filtered, _ = filter_items_by_core_category(self.raw_items, self.mapping)
         kits = [{"kit_id": "kit_a"}, {"kit_id": "kit_b"}]
 
         samples, report = build_clean_positive_samples(
