@@ -2,33 +2,12 @@
   "schema_version": 1,
   "artifact_name": "polyvore-core7-scorer-data",
   "dataset_version": "core7-v1",
-  "status": "REBUILD_REQUIRED_AFTER_MAPPING_UPDATE",
+  "status": "PRESERVE_DO_NOT_OVERWRITE",
   "owner": "bootcamp-project-team",
   "storage": {
     "provider": "google_drive",
     "folder_url": "https://drive.google.com/drive/folders/1SgTNlUz9fUWtfOoJP1tFoS1zM2iU60DQ"
   },
   "related_config": "configs/category_mapping_core7_v1.json",
-  "required_generation_order": [
-    "NB2_core7_drop_and_clean_positives.ipynb",
-    "NB3_core7_embedding_validation.ipynb",
-    "NB4_build_core7_scorer_dataset_v1.ipynb"
-  ],
-  "external_layout": {
-    "embedding_cache": "cache/fashionclip_item_embeddings.pt",
-    "core7_dir": "core7_drop_v1",
-    "scorer_ready_dir": "scorer_ready_v1"
-  },
-  "freeze_fields_after_rebuild": {
-    "generation_commit": null,
-    "mapping_sha256": null,
-    "train_sha256": null,
-    "valid_sha256": null,
-    "test_sha256": null,
-    "train_sample_count": null,
-    "valid_sample_count": null,
-    "test_sample_count": null,
-    "final_validation_status": null
-  },
-  "notes": "The previous scorer-ready files were generated with an older category mapping. Re-run NB2, NB3 and NB4, then replace null freeze fields from the generated manifests before declaring this artifact READY_TO_TRAIN."
+  "notes": "Core-7 V1 mapping is frozen and restored unchanged. Do not rebuild V1 with the PR #3 category-policy changes. Those changes belong to Core-7 V2 and must be generated into separate V2 artifact paths."
 }
