@@ -4,8 +4,9 @@
 Core-7 V2 uses the frozen ``core7-v2`` mapping while retaining Negative V1
 (``same_category_different_kit``). Before any negative is generated, the NB3
 embedding validation report must be PASS *and* its SHA-256 fingerprints must
-match the exact positive JSONL, item-metadata JSONL, FashionCLIP cache, and
-embedding manifest supplied to this build. A stale report is a hard failure.
+match the exact category mapping, positive JSONL, item-metadata JSONL,
+FashionCLIP cache, and embedding manifest supplied to this build. A stale
+report is a hard failure.
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Mapping, Optional, Sequence
+
+from .validate_core7_embeddings import fingerprint_category_mapping
 
 
 SPLITS = ("train", "valid", "test")
@@ -92,6 +95,7 @@ def verify_embedding_report_inputs(
     embedding_report: Mapping[str, object],
     *,
     data_dir: Path | str,
+    category_mapping_path: Path | str,
     embedding_cache_path: Path | str,
     embedding_manifest_path: Path | str,
 ) -> dict:
@@ -115,9 +119,12 @@ def verify_embedding_report_inputs(
         raise ValueError(
             "Embedding validation report is not bound to exact inputs; missing inputs hashes"
         )
+    reported_mapping = inputs.get("category_mapping")
     reported_cache = inputs.get("embedding_cache")
     reported_manifest = inputs.get("embedding_manifest")
     reported_splits = inputs.get("splits")
+    if not isinstance(reported_mapping, Mapping):
+        raise ValueError("Embedding report missing category_mapping fingerprint")
     if not isinstance(reported_cache, Mapping):
         raise ValueError("Embedding report missing embedding_cache fingerprint")
     if not isinstance(reported_manifest, Mapping):
@@ -126,6 +133,7 @@ def verify_embedding_report_inputs(
         raise ValueError("Embedding report missing split fingerprints")
 
     source_dir = Path(data_dir)
+    mapping_path = Path(category_mapping_path)
     cache_path = Path(embedding_cache_path)
     manifest_path = Path(embedding_manifest_path)
     mismatches: list[dict] = []
@@ -147,6 +155,30 @@ def verify_embedding_report_inputs(
                     "current_sha256": actual_sha,
                 }
             )
+
+    current_mapping = fingerprint_category_mapping(mapping_path)
+    check("category_mapping", mapping_path, reported_mapping.get("sha256"))
+    check(
+        "category_mapping_base",
+        Path(current_mapping["base_path"]),
+        reported_mapping.get("base_sha256"),
+    )
+    if (
+        reported_mapping.get("resolved_mapping_sha256")
+        != current_mapping["resolved_mapping_sha256"]
+    ):
+        mismatches.append(
+            {
+                "artifact": "category_mapping_resolved",
+                "reason": "sha256_mismatch",
+                "report_sha256": reported_mapping.get(
+                    "resolved_mapping_sha256"
+                ),
+                "current_sha256": current_mapping[
+                    "resolved_mapping_sha256"
+                ],
+            }
+        )
 
     check("embedding_cache", cache_path, reported_cache.get("sha256"))
     check("embedding_manifest", manifest_path, reported_manifest.get("sha256"))
@@ -172,6 +204,11 @@ def verify_embedding_report_inputs(
         "pass": not mismatches,
         "mismatch_count": len(mismatches),
         "mismatches": mismatches[:MAX_EXAMPLES],
+        "category_mapping_sha256": current_mapping["sha256"],
+        "category_mapping_base_sha256": current_mapping["base_sha256"],
+        "resolved_mapping_sha256": current_mapping[
+            "resolved_mapping_sha256"
+        ],
         "embedding_cache_sha256": sha256_file(cache_path) if cache_path.is_file() else None,
         "embedding_manifest_sha256": (
             sha256_file(manifest_path) if manifest_path.is_file() else None
@@ -1007,6 +1044,15 @@ def build_manifests(
         "source_dataset": "codewaly/polyvore1000",
         "data_contract_version": "data-contract-v1.0",
         "category_mapping_version": CATEGORY_MAPPING_VERSION,
+        "category_mapping_sha256": embedding_input_verification.get(
+            "category_mapping_sha256"
+        ),
+        "category_mapping_base_sha256": embedding_input_verification.get(
+            "category_mapping_base_sha256"
+        ),
+        "resolved_mapping_sha256": embedding_input_verification.get(
+            "resolved_mapping_sha256"
+        ),
         "item_metadata_version": ITEM_METADATA_VERSION,
         "embedding_version": embedding_report.get("embedding_version"),
         "embedding_model": cache_report.get("model_id"),
@@ -1039,6 +1085,7 @@ def build_scorer_dataset_v2(
     data_dir: Path | str,
     output_dir: Path | str,
     embedding_report_path: Path | str,
+    category_mapping_path: Path | str,
     embedding_cache_path: Path | str,
     embedding_manifest_path: Path | str,
     seed: int = DEFAULT_SEED,
@@ -1070,6 +1117,7 @@ def build_scorer_dataset_v2(
     embedding_input_verification = verify_embedding_report_inputs(
         embedding_report,
         data_dir=source_dir,
+        category_mapping_path=category_mapping_path,
         embedding_cache_path=embedding_cache_path,
         embedding_manifest_path=embedding_manifest_path,
     )
@@ -1166,6 +1214,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--embedding-report", type=Path, required=True)
+    parser.add_argument("--category-mapping", type=Path, required=True)
     parser.add_argument("--embedding-cache", type=Path, required=True)
     parser.add_argument("--embedding-manifest", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
@@ -1180,6 +1229,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         data_dir=args.data_dir,
         output_dir=args.output_dir,
         embedding_report_path=args.embedding_report,
+        category_mapping_path=args.category_mapping,
         embedding_cache_path=args.embedding_cache,
         embedding_manifest_path=args.embedding_manifest,
         seed=args.seed,

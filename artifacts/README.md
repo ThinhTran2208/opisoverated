@@ -67,9 +67,10 @@ trong V2 phải ghi `category_mapping_version = core7-v2`. Tương tự,
 `negative_v1` vẫn là protocol `same_category_different_kit`; dataset được bump
 sang V2 vì category mapping semantics đã thay đổi.
 
-NB3 ghi SHA-256 của exact inputs vào embedding-validation report. NB4 phải hash
-lại cache, manifest, positives và metadata; bất kỳ mismatch nào đều hard-fail
-trước negative sampling.
+NB3 ghi SHA-256 của exact inputs vào embedding-validation report. Vì Core-7 V2
+là override trên V1, report bind cả file V2, frozen V1 base và resolved mapping.
+NB4 phải hash lại mapping, cache, manifest, positives và metadata; bất kỳ
+mismatch nào đều hard-fail trước negative sampling.
 
 Người chạy có thể đặt `artifact_root` ở bất kỳ đâu và khai báo qua
 `FASHION_ARTIFACT_ROOT` hoặc `configs/data_paths.local.json`.

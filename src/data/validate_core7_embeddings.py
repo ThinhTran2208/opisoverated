@@ -2,9 +2,9 @@
 """Validate Core-7 V2 positives against the frozen FashionCLIP cache.
 
 The validation report is an evidence artifact, not a generic PASS flag. It is
-bound to the exact embedding cache, embedding manifest, positive JSONL files,
-and item-metadata JSONL files through SHA-256 digests. NB4 can therefore reject
-a stale report when any validated input has changed.
+bound to the exact Core-7 mapping, embedding cache, embedding manifest,
+positive JSONL files, and item-metadata JSONL files through SHA-256 digests.
+NB4 can therefore reject a stale report when any validated input has changed.
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ import json
 from collections import Counter
 from pathlib import Path
 from typing import Dict, Iterable, Mapping, Optional, Sequence
+
+from .prepare_core7_dataset_v2 import load_category_mapping_v2
 
 try:
     import torch
@@ -43,6 +45,18 @@ def sha256_file(path: Path | str) -> str:
     return digest.hexdigest()
 
 
+def _sha256_canonical_json(payload: Mapping[str, object]) -> str:
+    """Hash JSON semantics independently of whitespace and key order."""
+
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
+
+
 def read_json(path: Path | str) -> dict:
     source = Path(path)
     with source.open("r", encoding="utf-8") as stream:
@@ -50,6 +64,45 @@ def read_json(path: Path | str) -> dict:
     if not isinstance(payload, dict):
         raise ValueError(f"Expected JSON object in {source}")
     return payload
+
+
+def fingerprint_category_mapping(
+    mapping_path: Path | str,
+    *,
+    expected_mapping_version: str = EXPECTED_CATEGORY_MAPPING_VERSION,
+) -> dict:
+    """Fingerprint the V2 override, frozen V1 base, and resolved mapping.
+
+    Core-7 V2 is a delta on top of V1. Hashing only the V2 JSON would miss a
+    mutated base mapping, while hashing only the files would make semantic
+    comparisons depend on formatting. The resolved digest closes both gaps.
+    """
+
+    source = Path(mapping_path)
+    mapping_metadata, resolved = load_category_mapping_v2(source)
+    payload = read_json(source)
+    mapping_version = str(mapping_metadata.get("mapping_version", ""))
+    if mapping_version != expected_mapping_version:
+        raise ValueError(
+            "Category mapping version mismatch: "
+            f"expected={expected_mapping_version}, actual={mapping_version!r}"
+        )
+    base_name = payload.get("base_mapping")
+    if not isinstance(base_name, str) or not base_name.strip():
+        raise ValueError("Core-7 V2 mapping must declare base_mapping")
+    base_source = Path(base_name)
+    if not base_source.is_absolute():
+        base_source = source.parent / base_source
+    return {
+        "mapping_version": mapping_version,
+        "path": str(source),
+        "sha256": sha256_file(source),
+        "base_mapping_version": mapping_metadata["base_mapping_version"],
+        "base_path": str(base_source),
+        "base_sha256": sha256_file(base_source),
+        "resolved_mapping_count": len(resolved),
+        "resolved_mapping_sha256": _sha256_canonical_json(resolved),
+    }
 
 
 def read_jsonl(path: Path | str) -> list[dict]:
@@ -382,6 +435,7 @@ def validate_split(
 
 def _input_fingerprints(
     *,
+    mapping_path: Path,
     cache_path: Path,
     manifest_path: Path,
     positives_by_split: Mapping[str, Path | str],
@@ -398,6 +452,7 @@ def _input_fingerprints(
             "metadata_sha256": sha256_file(metadata_path),
         }
     return {
+        "category_mapping": fingerprint_category_mapping(mapping_path),
         "embedding_cache": {
             "path": str(cache_path),
             "sha256": sha256_file(cache_path),
@@ -412,6 +467,7 @@ def _input_fingerprints(
 
 def validate_core7_embedding_coverage(
     *,
+    mapping_path: Path | str,
     cache_path: Path | str,
     positives_by_split: Mapping[str, Path | str],
     metadata_by_split: Mapping[str, Path | str],
@@ -441,7 +497,12 @@ def validate_core7_embedding_coverage(
             f"Missing required embedding manifest: {manifest_source}"
         )
 
+    mapping_source = Path(mapping_path)
+    if not mapping_source.is_file():
+        raise FileNotFoundError(mapping_source)
+
     inputs = _input_fingerprints(
+        mapping_path=mapping_source,
         cache_path=cache_source,
         manifest_path=manifest_source,
         positives_by_split=positives_by_split,
@@ -481,6 +542,11 @@ def validate_core7_embedding_coverage(
     report = {
         "processing_stage": "core7_embedding_validation",
         "category_mapping_version": expected_mapping_version,
+        "mapping_path": str(mapping_source),
+        "mapping_sha256": inputs["category_mapping"]["sha256"],
+        "resolved_mapping_sha256": inputs["category_mapping"][
+            "resolved_mapping_sha256"
+        ],
         "embedding_version": manifest.get("embedding_version"),
         "cache_path": str(cache_source),
         "manifest_path": str(manifest_source),
@@ -550,6 +616,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Validate Core-7 V2 positives against a FashionCLIP cache"
     )
+    parser.add_argument("--mapping", type=Path, required=True)
     parser.add_argument("--cache", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, default=None)
     parser.add_argument("--data-dir", type=Path, required=True)
@@ -574,6 +641,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for split in ("train", "valid", "test")
     }
     report = validate_core7_embedding_coverage(
+        mapping_path=args.mapping,
         cache_path=args.cache,
         manifest_path=args.manifest,
         positives_by_split=positives,

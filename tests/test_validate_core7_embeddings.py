@@ -11,6 +11,7 @@ except ModuleNotFoundError:
     torch = None
 
 from src.data.validate_core7_embeddings import (
+    fingerprint_category_mapping,
     inspect_embedding_cache,
     inspect_embedding_manifest,
     repair_split,
@@ -25,6 +26,33 @@ def write_jsonl(path: Path, records: list[dict]) -> None:
         for record in records:
             stream.write(json.dumps(record))
             stream.write("\n")
+
+
+def write_mapping_files(root: Path) -> Path:
+    v1_path = root / "category_mapping_core7_v1.json"
+    v2_path = root / "category_mapping_core7_v2.json"
+    v1_path.write_text(
+        json.dumps(
+            {
+                "mapping_version": "core7-v1",
+                "status": "frozen",
+                "mapping": {"T-Shirts": "TOP", "Jeans": "BOTTOM"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    v2_path.write_text(
+        json.dumps(
+            {
+                "mapping_version": "core7-v2",
+                "status": "frozen",
+                "base_mapping": v1_path.name,
+                "overrides": {"T-Shirts": "DROP"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return v2_path
 
 
 class Core7EmbeddingValidationTests(unittest.TestCase):
@@ -96,6 +124,24 @@ class Core7EmbeddingValidationTests(unittest.TestCase):
         self.assertFalse(report["pass"])
         self.assertEqual(report["wrong_mapping_version_count"], 1)
 
+    def test_mapping_fingerprint_binds_base_override_and_resolved_mapping(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mapping_path = write_mapping_files(root)
+
+            first = fingerprint_category_mapping(mapping_path)
+            payload = json.loads(mapping_path.read_text(encoding="utf-8"))
+            payload["overrides"]["Jeans"] = "DROP"
+            mapping_path.write_text(json.dumps(payload), encoding="utf-8")
+            second = fingerprint_category_mapping(mapping_path)
+
+            self.assertNotEqual(first["sha256"], second["sha256"])
+            self.assertEqual(first["base_sha256"], second["base_sha256"])
+            self.assertNotEqual(
+                first["resolved_mapping_sha256"],
+                second["resolved_mapping_sha256"],
+            )
+
     @unittest.skipIf(torch is None, "PyTorch is not installed")
     def test_nonfinite_and_bad_norm_rows_fail_cache(self):
         embeddings = torch.eye(3, 512)
@@ -164,6 +210,7 @@ class Core7EmbeddingValidationTests(unittest.TestCase):
             positives_path = root / "positives.jsonl"
             metadata_path = root / "metadata.jsonl"
             report_path = root / "report.json"
+            mapping_path = write_mapping_files(root)
 
             torch.save(
                 {
@@ -193,6 +240,7 @@ class Core7EmbeddingValidationTests(unittest.TestCase):
             write_jsonl(metadata_path, self.metadata)
 
             report = validate_core7_embedding_coverage(
+                mapping_path=mapping_path,
                 cache_path=cache_path,
                 manifest_path=manifest_path,
                 positives_by_split={"train": positives_path},
@@ -204,6 +252,14 @@ class Core7EmbeddingValidationTests(unittest.TestCase):
             self.assertTrue(report["manifest"]["pass"])
             self.assertTrue(report["reuse_category_clean_as_final"])
             self.assertTrue(report["ready_for_negative_sampling"])
+            self.assertEqual(
+                report["inputs"]["category_mapping"]["sha256"],
+                sha256_file(mapping_path),
+            )
+            self.assertEqual(
+                report["mapping_sha256"],
+                sha256_file(mapping_path),
+            )
             self.assertEqual(
                 report["inputs"]["embedding_cache"]["sha256"],
                 sha256_file(cache_path),

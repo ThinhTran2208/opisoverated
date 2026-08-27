@@ -27,6 +27,8 @@
   "freeze_fields_after_rebuild": {
     "generation_commit": null,
     "mapping_sha256": null,
+    "base_mapping_sha256": null,
+    "resolved_mapping_sha256": null,
     "embedding_cache_sha256": null,
     "embedding_manifest_sha256": null,
     "train_sha256": null,
@@ -37,5 +39,5 @@
     "test_sample_count": null,
     "final_validation_status": null
   },
-  "notes": "Run NB2 -> NB3 -> NB4. NB3 binds its PASS report to exact input SHA-256 digests; NB4 must verify those digests before negative sampling. Populate freeze fields only after final READY_TO_TRAIN validation."
+  "notes": "Run NB2 -> NB3 -> NB4. NB3 binds its PASS report to the V2 mapping, frozen V1 base, resolved mapping, cache, manifest, positives and metadata. NB4 must verify those exact SHA-256 digests before negative sampling. Populate freeze fields only after final READY_TO_TRAIN validation."
 }

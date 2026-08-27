@@ -14,6 +14,7 @@ from src.data.build_core7_scorer_dataset import (
     validate_all_splits,
     validate_scorer_split,
 )
+from src.data.validate_core7_embeddings import fingerprint_category_mapping
 
 
 def positive(kit_id: str, items: list[str]) -> dict:
@@ -79,10 +80,42 @@ def write_jsonl(path: Path, records: list[dict]) -> None:
             stream.write("\n")
 
 
+def write_mapping_files(root: Path) -> Path:
+    v1_path = root / "category_mapping_core7_v1.json"
+    v2_path = root / "category_mapping_core7_v2.json"
+    v1_path.write_text(
+        json.dumps(
+            {
+                "mapping_version": "core7-v1",
+                "status": "frozen",
+                "mapping": {
+                    "T-Shirts": "TOP",
+                    "Jeans": "BOTTOM",
+                    "Sneakers": "SHOES",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    v2_path.write_text(
+        json.dumps(
+            {
+                "mapping_version": "core7-v2",
+                "status": "frozen",
+                "base_mapping": v1_path.name,
+                "overrides": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return v2_path
+
+
 def embedding_report_for_files(
     data_dir: Path,
     cache_path: Path,
     manifest_path: Path,
+    mapping_path: Path,
 ) -> dict:
     splits = {}
     fingerprints = {}
@@ -112,6 +145,7 @@ def embedding_report_for_files(
         },
         "splits": splits,
         "inputs": {
+            "category_mapping": fingerprint_category_mapping(mapping_path),
             "embedding_cache": {
                 "path": str(cache_path),
                 "sha256": sha256_file(cache_path),
@@ -252,6 +286,7 @@ class Core7ScorerDatasetTests(unittest.TestCase):
             )
         cache_path = root / "fashionclip.pt"
         manifest_path = root / "embedding_manifest_v1.json"
+        mapping_path = write_mapping_files(root)
         cache_path.write_bytes(b"unit-test-cache")
         manifest_path.write_text(
             json.dumps(
@@ -270,10 +305,24 @@ class Core7ScorerDatasetTests(unittest.TestCase):
         )
         embedding_report_path = data_dir / "embedding_report.json"
         embedding_report_path.write_text(
-            json.dumps(embedding_report_for_files(data_dir, cache_path, manifest_path)),
+            json.dumps(
+                embedding_report_for_files(
+                    data_dir,
+                    cache_path,
+                    manifest_path,
+                    mapping_path,
+                )
+            ),
             encoding="utf-8",
         )
-        return data_dir, output_dir, cache_path, manifest_path, embedding_report_path
+        return (
+            data_dir,
+            output_dir,
+            cache_path,
+            manifest_path,
+            mapping_path,
+            embedding_report_path,
+        )
 
     def test_end_to_end_builder_writes_ready_v2_manifests(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -283,6 +332,7 @@ class Core7ScorerDatasetTests(unittest.TestCase):
                 output_dir,
                 cache_path,
                 manifest_path,
+                mapping_path,
                 embedding_report_path,
             ) = self._write_end_to_end_inputs(root)
 
@@ -290,6 +340,7 @@ class Core7ScorerDatasetTests(unittest.TestCase):
                 data_dir=data_dir,
                 output_dir=output_dir,
                 embedding_report_path=embedding_report_path,
+                category_mapping_path=mapping_path,
                 embedding_cache_path=cache_path,
                 embedding_manifest_path=manifest_path,
                 git_commit="unit-test",
@@ -317,6 +368,7 @@ class Core7ScorerDatasetTests(unittest.TestCase):
                 output_dir,
                 cache_path,
                 manifest_path,
+                mapping_path,
                 embedding_report_path,
             ) = self._write_end_to_end_inputs(root)
 
@@ -330,6 +382,63 @@ class Core7ScorerDatasetTests(unittest.TestCase):
                     data_dir=data_dir,
                     output_dir=output_dir,
                     embedding_report_path=embedding_report_path,
+                    category_mapping_path=mapping_path,
+                    embedding_cache_path=cache_path,
+                    embedding_manifest_path=manifest_path,
+                    git_commit="unit-test",
+                )
+
+    def test_builder_rejects_stale_embedding_report_after_mapping_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (
+                data_dir,
+                output_dir,
+                cache_path,
+                manifest_path,
+                mapping_path,
+                embedding_report_path,
+            ) = self._write_end_to_end_inputs(root)
+
+            payload = json.loads(mapping_path.read_text(encoding="utf-8"))
+            payload["overrides"]["T-Shirts"] = "DROP"
+            mapping_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "stale"):
+                build_scorer_dataset_v2(
+                    data_dir=data_dir,
+                    output_dir=output_dir,
+                    embedding_report_path=embedding_report_path,
+                    category_mapping_path=mapping_path,
+                    embedding_cache_path=cache_path,
+                    embedding_manifest_path=manifest_path,
+                    git_commit="unit-test",
+                )
+
+    def test_builder_rejects_stale_report_after_base_mapping_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (
+                data_dir,
+                output_dir,
+                cache_path,
+                manifest_path,
+                mapping_path,
+                embedding_report_path,
+            ) = self._write_end_to_end_inputs(root)
+
+            v2_payload = json.loads(mapping_path.read_text(encoding="utf-8"))
+            base_path = mapping_path.parent / v2_payload["base_mapping"]
+            base_payload = json.loads(base_path.read_text(encoding="utf-8"))
+            base_payload["mapping"]["T-Shirts"] = "DROP"
+            base_path.write_text(json.dumps(base_payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "stale"):
+                build_scorer_dataset_v2(
+                    data_dir=data_dir,
+                    output_dir=output_dir,
+                    embedding_report_path=embedding_report_path,
+                    category_mapping_path=mapping_path,
                     embedding_cache_path=cache_path,
                     embedding_manifest_path=manifest_path,
                     git_commit="unit-test",
