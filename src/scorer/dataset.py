@@ -266,6 +266,20 @@ def inspect_embedding_cache_for_scorer(
     return item_ids, embeddings
 
 
+class EmbeddingStore:
+    """Load the FashionCLIP cache once and share it across split datasets."""
+
+    def __init__(self, embedding_cache_path: Path | str) -> None:
+        require_torch()
+        self.embedding_cache_path = Path(embedding_cache_path)
+        cache = load_embedding_cache(self.embedding_cache_path)
+        item_ids, embeddings = inspect_embedding_cache_for_scorer(cache)
+        self.embedding_matrix = embeddings
+        self.embedding_row_by_item = {
+            item_id: row for row, item_id in enumerate(item_ids)
+        }
+
+
 class ScorerDataset:
     """Map frozen scorer-ready records to variable-length tensor samples."""
 
@@ -273,18 +287,20 @@ class ScorerDataset:
         self,
         samples_path: Path | str,
         metadata_path: Path | str,
-        embedding_cache_path: Path | str,
+        embedding_cache_path: Path | str | None = None,
         *,
+        embedding_store: EmbeddingStore | None = None,
         min_items: int = MIN_ITEMS,
         max_items: int = MAX_ITEMS,
     ) -> None:
         require_torch()
         if min_items < 1 or max_items < min_items:
             raise ValueError("Require 1 <= min_items <= max_items")
+        if embedding_store is None and embedding_cache_path is None:
+            raise ValueError("Provide embedding_cache_path or embedding_store")
 
         self.samples_path = Path(samples_path)
         self.metadata_path = Path(metadata_path)
-        self.embedding_cache_path = Path(embedding_cache_path)
         self.min_items = min_items
         self.max_items = max_items
 
@@ -292,12 +308,10 @@ class ScorerDataset:
         self.metadata_by_item = build_metadata_index(read_jsonl(self.metadata_path))
         self.pair_families = paired_family_indices(self.records)
 
-        cache = load_embedding_cache(self.embedding_cache_path)
-        item_ids, embeddings = inspect_embedding_cache_for_scorer(cache)
-        self.embedding_matrix = embeddings
-        self.embedding_row_by_item = {
-            item_id: row for row, item_id in enumerate(item_ids)
-        }
+        self.embedding_store = embedding_store or EmbeddingStore(embedding_cache_path)
+        self.embedding_cache_path = self.embedding_store.embedding_cache_path
+        self.embedding_matrix = self.embedding_store.embedding_matrix
+        self.embedding_row_by_item = self.embedding_store.embedding_row_by_item
 
         self._validate_records()
 
@@ -411,12 +425,35 @@ def collate_scorer_batch(
     }
 
 
-def build_dataset_from_runtime(runtime_paths, split: str) -> ScorerDataset:
+def build_dataset_from_runtime(
+    runtime_paths,
+    split: str,
+    *,
+    embedding_store: EmbeddingStore | None = None,
+) -> ScorerDataset:
     """Construct a split dataset from ``src.data.runtime_paths.RuntimePaths``."""
 
     _validate_split(split)
     return ScorerDataset(
         scorer_split_path(runtime_paths.scorer_ready_dir, split),
         metadata_split_path(runtime_paths.core7_dir, split),
-        runtime_paths.embedding_cache,
+        runtime_paths.embedding_cache if embedding_store is None else None,
+        embedding_store=embedding_store,
     )
+
+
+def build_datasets_from_runtime(
+    runtime_paths,
+    *,
+    splits: Sequence[str] = SPLITS,
+) -> tuple[dict[str, ScorerDataset], EmbeddingStore]:
+    """Build multiple splits while loading the embedding cache exactly once."""
+
+    store = EmbeddingStore(runtime_paths.embedding_cache)
+    datasets = {
+        split: build_dataset_from_runtime(
+            runtime_paths, split, embedding_store=store
+        )
+        for split in splits
+    }
+    return datasets, store
