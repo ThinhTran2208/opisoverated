@@ -1,16 +1,19 @@
 # -*- coding: utf-8 -*-
 """Training utilities for Type-aware Pairwise Scorer V1.
 
-Implements the locked S3 baseline:
+The primary training path remains deliberately simple:
 - BCEWithLogitsLoss
 - AdamW
-- lr=3e-4, weight_decay=1e-4 from config
-- full train/valid loaders sharing one FashionCLIP embedding cache
-- AMP allowed for training on CUDA
-- canonical validation always runs in FP32
-- validation ROC-AUC model selection
-- patience-based early stopping
+- standard sample-level shuffled training batches
+- optional AMP for training when explicitly enabled in config
+- canonical validation always in FP32
+- validation ROC-AUC checkpoint selection
+- patience-based early stopping with an optional minimum-epoch floor
 - best.pt + last.pt checkpoints in external artifact storage
+
+The minimum-epoch floor is useful for this scorer because validation ROC-AUC
+can be noisy early while the strongest FP32 run continued improving near the
+old 30-epoch boundary.
 """
 
 from __future__ import annotations
@@ -37,7 +40,7 @@ from .model import SCORER_VERSION, TypeAwarePairwiseScorer
 
 
 class TrainingContractError(ValueError):
-    """Raised when the S3 config violates the locked scorer baseline."""
+    """Raised when scorer training config violates supported semantics."""
 
 
 def require_torch() -> None:
@@ -74,10 +77,11 @@ def _training_config(config: Mapping[str, object]) -> Mapping[str, object]:
 
 
 def validate_s3_config(config: Mapping[str, object]) -> None:
-    """Reject silent drift away from the locked baseline semantics."""
+    """Reject silent drift away from supported scorer-training semantics."""
 
     if not isinstance(config, Mapping):
         raise TrainingContractError("config must be a mapping")
+
     model_config = config.get("model")
     data_config = config.get("data")
     training = _training_config(config)
@@ -93,15 +97,25 @@ def validate_s3_config(config: Mapping[str, object]) -> None:
         raise TrainingContractError("Scorer V1 locks data.max_items = 8")
 
     if str(training.get("optimizer", "")).lower() != "adamw":
-        raise TrainingContractError("Scorer V1 baseline locks optimizer=adamw")
+        raise TrainingContractError("Scorer V1 supports optimizer=adamw")
     if str(training.get("lr_scheduler", "")).lower() != "none":
-        raise TrainingContractError("Scorer V1 baseline locks lr_scheduler=none")
+        raise TrainingContractError("Scorer V1 currently supports lr_scheduler=none")
     if str(training.get("gradient_clipping", "")).lower() != "none":
-        raise TrainingContractError("Scorer V1 baseline locks gradient_clipping=none")
-    if int(training.get("max_epochs", 0)) < 1 or int(training["max_epochs"]) > 30:
-        raise TrainingContractError("S3 max_epochs must be in [1, 30]")
-    if int(training.get("early_stopping_patience", 0)) < 1:
+        raise TrainingContractError("Scorer V1 currently supports gradient_clipping=none")
+
+    max_epochs = int(training.get("max_epochs", 0))
+    if max_epochs < 1 or max_epochs > 100:
+        raise TrainingContractError("max_epochs must be in [1, 100]")
+
+    patience = int(training.get("early_stopping_patience", 0))
+    if patience < 1:
         raise TrainingContractError("early_stopping_patience must be >= 1")
+
+    min_epochs = int(training.get("early_stopping_min_epochs", 1))
+    if min_epochs < 1 or min_epochs > max_epochs:
+        raise TrainingContractError(
+            "early_stopping_min_epochs must satisfy 1 <= value <= max_epochs"
+        )
 
     if not isinstance(selection, Mapping):
         raise TrainingContractError("config['selection'] must be a mapping")
@@ -118,7 +132,7 @@ def build_train_valid_loaders(
     num_workers: int = 0,
     pin_memory: bool | None = None,
 ):
-    """Build full frozen train/valid datasets and loaders with one shared cache."""
+    """Build full frozen train/valid datasets and fresh standard loaders."""
 
     require_torch()
     validate_s3_config(config)
@@ -140,6 +154,8 @@ def build_train_valid_loaders(
     max_items = int(data_config["max_items"])
     collate_fn = partial(collate_scorer_batch, max_items=max_items)
 
+    # Use a DataLoader-local generator so sample order is reproducible and can
+    # be recreated by rebuilding the loader from the same seed.
     generator = torch.Generator()
     generator.manual_seed(seed)
 
@@ -173,12 +189,12 @@ def build_train_valid_loaders(
 
 
 def build_optimizer(model, config: Mapping[str, object]):
-    """Build the locked AdamW optimizer from config."""
+    """Build AdamW from scorer config."""
 
     require_torch()
     training = _training_config(config)
     if str(training.get("optimizer", "")).lower() != "adamw":
-        raise TrainingContractError("Only AdamW is supported in Scorer V1 baseline")
+        raise TrainingContractError("Only AdamW is supported in Scorer V1")
 
     return torch.optim.AdamW(
         model.parameters(),
@@ -225,7 +241,7 @@ def train_one_epoch(
     scaler=None,
     mixed_precision: bool = False,
 ) -> tuple[float, int]:
-    """Train one epoch and return mean BCE loss + optimizer-step count."""
+    """Train one standard shuffled BCE epoch."""
 
     require_torch()
     model.train()
@@ -270,12 +286,12 @@ def evaluate_epoch(
     device,
     mixed_precision: bool = False,
 ) -> dict[str, object]:
-    """Evaluate canonical validation metrics in FP32.
+    """Evaluate validation logits and metrics in FP32.
 
     ``mixed_precision`` is retained for call-site compatibility but is
     intentionally ignored. Validation logits, BCE, ROC-AUC, FITB and margins
-    must be computed from a non-autocast FP32 forward pass because FP16
-    quantization can turn tiny positive/negative margins into exact ties.
+    must use a non-autocast forward pass because FP16 can quantize small paired
+    margins into exact ties.
     """
 
     require_torch()
@@ -293,7 +309,6 @@ def evaluate_epoch(
     with torch.no_grad():
         for batch in dataloader:
             labels = batch["labels"].to(device, non_blocking=True)
-            # Intentionally no autocast here: canonical validation is FP32.
             logits = _forward_batch(model, batch, device)
             loss = criterion(logits, labels)
 
@@ -336,7 +351,7 @@ def fit_scorer(
     provenance: Mapping[str, object],
     device=None,
 ) -> dict[str, object]:
-    """Run S3 baseline training with validation ROC-AUC early stopping."""
+    """Train BCE scorer and select best checkpoint by validation ROC-AUC."""
 
     require_torch()
     validate_s3_config(config)
@@ -360,6 +375,7 @@ def fit_scorer(
 
     max_epochs = int(training["max_epochs"])
     patience = int(training["early_stopping_patience"])
+    min_epochs = int(training.get("early_stopping_min_epochs", 1))
     min_delta = float(training.get("early_stopping_min_delta", 0.0))
 
     output_dir = Path(checkpoint_dir)
@@ -440,11 +456,11 @@ def fit_scorer(
             f"{'BEST' if improved else ''}"
         )
 
-        if epochs_without_improvement >= patience:
+        if epoch >= min_epochs and epochs_without_improvement >= patience:
             stopped_early = True
             print(
-                "Early stopping: "
-                f"validation ROC-AUC did not improve for {patience} epochs."
+                "Early stopping: validation ROC-AUC did not improve for "
+                f"{patience} epochs after minimum epoch {min_epochs}."
             )
             break
 
@@ -461,6 +477,7 @@ def fit_scorer(
         "last_checkpoint": last_path,
         "device": str(device),
         "mixed_precision_active": mixed_precision,
+        "training_precision": "amp_fp16" if mixed_precision else "fp32",
         "validation_precision": "fp32",
     }
 
@@ -474,7 +491,7 @@ def run_baseline_training(
     num_workers: int = 0,
     device=None,
 ) -> dict[str, object]:
-    """One-call S3 entry point for notebook/CLI wrappers."""
+    """One-call scorer training entry point for notebook/CLI wrappers."""
 
     require_torch()
     validate_s3_config(config)
