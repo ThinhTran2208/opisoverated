@@ -5,6 +5,7 @@ model:
   category_vocab_size: 8
   category_padding_idx: 0
   category_embedding_dim: 32
+  category_embedding_init_std: 0.02
   item_projection_dim: 256
   item_hidden_dim: 128
   pair_hidden_dim: 128

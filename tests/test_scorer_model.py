@@ -3,6 +3,7 @@
 import unittest
 
 from src.scorer.model import (
+    CATEGORY_EMBEDDING_INIT_STD,
     SCORER_VERSION,
     TypeAwarePairwiseScorer,
     torch,
@@ -21,6 +22,7 @@ class TypeAwarePairwiseScorerTests(unittest.TestCase):
                 "category_vocab_size": 8,
                 "category_padding_idx": 0,
                 "category_embedding_dim": 32,
+                "category_embedding_init_std": 0.02,
                 "item_projection_dim": 256,
                 "item_hidden_dim": 128,
                 "pair_hidden_dim": 128,
@@ -54,8 +56,46 @@ class TypeAwarePairwiseScorerTests(unittest.TestCase):
         self.assertEqual(self.model.scorer_version, SCORER_VERSION)
         self.assertEqual(self.model.embedding_dim, 512)
         self.assertEqual(self.model.category_vocab_size, 8)
+        self.assertEqual(
+            self.model.category_embedding_init_std,
+            CATEGORY_EMBEDDING_INIT_STD,
+        )
         self.assertEqual(self.model.item_hidden_dim, 128)
         self.assertEqual(self.model.pair_feature_dim, 576)
+
+    def test_category_embedding_uses_small_reproducible_initialization(self):
+        weights = self.model.category_embedding.weight.detach()
+        padding = weights[self.model.category_padding_idx]
+        real_categories = weights[1:]
+
+        self.assertTrue(torch.equal(padding, torch.zeros_like(padding)))
+        self.assertLess(float(real_categories.norm(dim=1).mean()), 0.2)
+        self.assertAlmostEqual(
+            float(real_categories.std(unbiased=False)),
+            CATEGORY_EMBEDDING_INIT_STD,
+            delta=0.004,
+        )
+
+        torch.manual_seed(7)
+        repeated = TypeAwarePairwiseScorer.from_config(self.config)
+        self.assertTrue(
+            torch.equal(
+                self.model.category_embedding.weight,
+                repeated.category_embedding.weight,
+            )
+        )
+
+    def test_category_embedding_rejects_invalid_initialization_scale(self):
+        for value in (0.0, -0.02, float("inf"), float("nan")):
+            config = {
+                **self.config,
+                "model": {
+                    **self.config["model"],
+                    "category_embedding_init_std": value,
+                },
+            }
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                TypeAwarePairwiseScorer.from_config(config)
 
     def test_forward_output_shape_and_finite(self):
         self.model.eval()

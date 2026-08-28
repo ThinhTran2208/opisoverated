@@ -362,6 +362,14 @@ Embedding(
 )
 ```
 
+Initialization được khóa để category vector không lấn át FashionCLIP vector
+đã L2-normalized:
+
+```text
+category_embedding.weight ~ Normal(mean=0, std=0.02)
+category_embedding.weight[PAD] = 0
+```
+
 Cho item `i`:
 
 ```text
@@ -1148,6 +1156,7 @@ model:
   category_vocab_size: 8
   category_padding_idx: 0
   category_embedding_dim: 32
+  category_embedding_init_std: 0.02
   item_projection_dim: 256
   item_hidden_dim: 128
   pair_hidden_dim: 128
