@@ -6,6 +6,8 @@ Implements the locked S3 baseline:
 - AdamW
 - lr=3e-4, weight_decay=1e-4 from config
 - full train/valid loaders sharing one FashionCLIP embedding cache
+- AMP allowed for training on CUDA
+- canonical validation always runs in FP32
 - validation ROC-AUC model selection
 - patience-based early stopping
 - best.pt + last.pt checkpoints in external artifact storage
@@ -186,6 +188,8 @@ def build_optimizer(model, config: Mapping[str, object]):
 
 
 def _autocast_context(device, enabled: bool):
+    """Training-only autocast context."""
+
     enabled = bool(enabled and device.type == "cuda")
     if not enabled:
         return nullcontext()
@@ -266,9 +270,16 @@ def evaluate_epoch(
     device,
     mixed_precision: bool = False,
 ) -> dict[str, object]:
-    """Evaluate validation BCE + canonical ROC-AUC/FITB/margin metrics."""
+    """Evaluate canonical validation metrics in FP32.
+
+    ``mixed_precision`` is retained for call-site compatibility but is
+    intentionally ignored. Validation logits, BCE, ROC-AUC, FITB and margins
+    must be computed from a non-autocast FP32 forward pass because FP16
+    quantization can turn tiny positive/negative margins into exact ties.
+    """
 
     require_torch()
+    del mixed_precision
     was_training = bool(model.training)
     model.eval()
 
@@ -282,9 +293,9 @@ def evaluate_epoch(
     with torch.no_grad():
         for batch in dataloader:
             labels = batch["labels"].to(device, non_blocking=True)
-            with _autocast_context(device, mixed_precision):
-                logits = _forward_batch(model, batch, device)
-                loss = criterion(logits, labels)
+            # Intentionally no autocast here: canonical validation is FP32.
+            logits = _forward_batch(model, batch, device)
+            loss = criterion(logits, labels)
 
             if not torch.isfinite(loss) or not torch.isfinite(logits).all():
                 raise RuntimeError("Non-finite validation output encountered")
@@ -380,7 +391,6 @@ def fit_scorer(
             valid_loader,
             criterion=criterion,
             device=device,
-            mixed_precision=mixed_precision,
         )
         valid_roc_auc = float(valid_metrics["roc_auc"])
 
@@ -451,6 +461,7 @@ def fit_scorer(
         "last_checkpoint": last_path,
         "device": str(device),
         "mixed_precision_active": mixed_precision,
+        "validation_precision": "fp32",
     }
 
 
