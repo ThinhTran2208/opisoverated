@@ -4,7 +4,11 @@ import unittest
 from unittest.mock import patch
 
 from src.scorer.model import torch
-from src.scorer.train import evaluate_epoch
+
+if torch is not None:
+    from src.scorer.train import evaluate_epoch
+else:  # Keep lightweight portability CI free of NumPy/PyTorch training deps.
+    evaluate_epoch = None
 
 
 @unittest.skipUnless(torch is not None, "PyTorch is not installed in portability CI")
