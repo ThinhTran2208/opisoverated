@@ -57,6 +57,28 @@ class TypeAwarePairwiseScorerTests(unittest.TestCase):
         self.assertEqual(self.model.item_hidden_dim, 128)
         self.assertEqual(self.model.pair_feature_dim, 576)
 
+    def test_category_embedding_init_matches_fashionclip_scale(self):
+        weights = self.model.category_embedding.weight.detach()
+        padding_row = weights[self.model.category_padding_idx]
+        self.assertTrue(torch.equal(padding_row, torch.zeros_like(padding_row)))
+
+        expected_std = self.model.category_embedding_dim ** -0.5
+        self.assertAlmostEqual(
+            self.model.category_embedding_init_std,
+            expected_std,
+            places=12,
+        )
+
+        real_weights = weights[1:]
+        empirical_rms = real_weights.square().mean().sqrt().item()
+        self.assertLess(
+            abs(empirical_rms - expected_std),
+            expected_std * 0.25,
+        )
+        mean_norm = real_weights.norm(dim=1).mean().item()
+        self.assertGreater(mean_norm, 0.7)
+        self.assertLess(mean_norm, 1.3)
+
     def test_forward_output_shape_and_finite(self):
         self.model.eval()
         embeddings, categories, item_mask = self._batch()
