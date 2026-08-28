@@ -173,6 +173,7 @@ def build_checkpoint_payload(
     seed: int,
     best_valid_roc_auc: float,
     validation_metrics: Mapping[str, object],
+    extra_state: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Create and validate one canonical checkpoint payload."""
 
@@ -200,18 +201,29 @@ def build_checkpoint_payload(
         "best_valid_roc_auc": float(best_valid_roc_auc),
         "validation_metrics": dict(validation_metrics),
     }
+    if extra_state is not None:
+        if not isinstance(extra_state, Mapping):
+            raise TypeError("extra_state must be a mapping when provided")
+        reserved = sorted(set(extra_state) & set(payload))
+        if reserved:
+            raise ValueError(
+                f"extra_state may not override checkpoint keys: {reserved}"
+            )
+        payload.update(dict(extra_state))
     validate_checkpoint_payload(payload)
     return payload
 
 
 def save_checkpoint(path: Path | str, payload: Mapping[str, object]) -> Path:
-    """Validate and write a checkpoint to the requested artifact path."""
+    """Validate and atomically write a checkpoint to the artifact path."""
 
     require_torch()
     validate_checkpoint_payload(payload)
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(dict(payload), destination)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    torch.save(dict(payload), temporary)
+    temporary.replace(destination)
     return destination
 
 

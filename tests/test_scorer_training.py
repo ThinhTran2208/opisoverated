@@ -4,6 +4,7 @@ import unittest
 
 from src.scorer.dataset import build_pair_mask
 from src.scorer.train import (
+    build_full_training_loaders,
     build_optimizer,
     build_tiny_overfit_loader,
     run_tiny_overfit,
@@ -130,6 +131,36 @@ class ScorerTrainingTests(unittest.TestCase):
             if float(label) == 0.0
         }
         self.assertEqual(positive_ids, negative_pair_ids)
+
+    def test_full_loaders_shuffle_train_only(self):
+        train_dataset = self.ToyFamilyDataset(family_count=4)
+        valid_dataset = self.ToyFamilyDataset(family_count=2)
+        train_loader, valid_loader = build_full_training_loaders(
+            train_dataset,
+            valid_dataset,
+            {
+                "data": {"max_items": 8},
+                "training": {"batch_size": 4, "seed": 42},
+            },
+        )
+        self.assertEqual(type(train_loader.sampler).__name__, "RandomSampler")
+        self.assertEqual(type(valid_loader.sampler).__name__, "SequentialSampler")
+        self.assertEqual(len(train_loader.dataset), 8)
+        self.assertEqual(len(valid_loader.dataset), 4)
+        self.assertEqual(len(next(iter(train_loader))["sample_ids"]), 4)
+
+    def test_full_loaders_reject_non_integer_seed(self):
+        dataset = self.ToyFamilyDataset(family_count=2)
+        for invalid_seed in (True, 42.5):
+            with self.subTest(seed=invalid_seed), self.assertRaises(ValueError):
+                build_full_training_loaders(
+                    dataset,
+                    dataset,
+                    {
+                        "data": {"max_items": 8},
+                        "training": {"batch_size": 4, "seed": invalid_seed},
+                    },
+                )
 
     def test_train_one_epoch_updates_parameters(self):
         model = self.ToyPairModel()

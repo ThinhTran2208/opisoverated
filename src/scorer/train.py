@@ -8,11 +8,15 @@ the same implementation.
 
 from __future__ import annotations
 
+import json
 import math
+import platform
 import random
+from importlib import metadata as importlib_metadata
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import nullcontext
 from functools import partial
+from pathlib import Path
 
 try:
     import numpy as np
@@ -31,6 +35,13 @@ except ModuleNotFoundError:  # Keep source importable in lightweight CI.
 
 from .dataset import MAX_ITEMS, collate_scorer_batch, flatten_family_indices
 from .evaluate import evaluate_model
+from .checkpoint import (
+    build_checkpoint_payload,
+    restore_checkpoint,
+    save_checkpoint,
+    save_epoch_checkpoints,
+)
+from .model import SCORER_VERSION
 
 
 DEFAULT_LEARNING_RATE = 3e-4
@@ -38,6 +49,9 @@ DEFAULT_WEIGHT_DECAY = 1e-4
 DEFAULT_SEED = 42
 DEFAULT_TINY_FAMILY_COUNT = 32
 DEFAULT_TINY_MAX_EPOCHS = 300
+DEFAULT_FULL_BATCH_SIZE = 256
+DEFAULT_FULL_MAX_EPOCHS = 30
+DEFAULT_EARLY_STOPPING_PATIENCE = 5
 
 
 def require_training_dependencies() -> None:
@@ -92,6 +106,21 @@ def _training_section(config: Mapping[str, object]) -> Mapping[str, object]:
     return section
 
 
+def _locked_integer(
+    section: Mapping[str, object],
+    key: str,
+    default: int,
+    *,
+    minimum: int,
+) -> int:
+    """Read an integer config value without silently truncating floats/bools."""
+
+    value = section.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ValueError(f"training.{key} must be an integer >= {minimum}")
+    return value
+
+
 def build_optimizer(model, config: Mapping[str, object]):
     """Build the optimizer locked by Scorer Contract V1."""
 
@@ -117,6 +146,57 @@ def build_optimizer(model, config: Mapping[str, object]):
         lr=learning_rate,
         weight_decay=weight_decay,
     )
+
+
+def build_full_training_loaders(
+    train_dataset,
+    valid_dataset,
+    config: Mapping[str, object],
+    *,
+    num_workers: int = 0,
+) -> tuple[object, object]:
+    """Build the locked S3 train/validation loaders without a test loader."""
+
+    require_training_dependencies()
+    section = _training_section(config)
+    data_section = config.get("data", {})
+    if not isinstance(data_section, Mapping):
+        raise ValueError("config['data'] must be a mapping")
+
+    batch_size = _locked_integer(
+        section,
+        "batch_size",
+        DEFAULT_FULL_BATCH_SIZE,
+        minimum=1,
+    )
+    seed = _locked_integer(section, "seed", DEFAULT_SEED, minimum=0)
+    max_items = int(data_section.get("max_items", MAX_ITEMS))
+    if num_workers < 0:
+        raise ValueError("num_workers must be >= 0")
+    if len(train_dataset) < 1 or len(valid_dataset) < 1:
+        raise ValueError("Train and validation datasets must be non-empty")
+
+    train_generator = torch.Generator()
+    train_generator.manual_seed(seed)
+    collate_fn = partial(collate_scorer_batch, max_items=max_items)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        generator=train_generator,
+        drop_last=False,
+    )
+    valid_loader = DataLoader(
+        valid_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        drop_last=False,
+    )
+    return train_loader, valid_loader
 
 
 def build_tiny_overfit_loader(
@@ -359,7 +439,9 @@ def evaluate_binary_loss(
     return loss_sum / sample_count
 
 
-def _tiny_snapshot(model, dataloader, *, device, use_amp: bool) -> dict[str, object]:
+def _evaluation_snapshot(
+    model, dataloader, *, device, use_amp: bool
+) -> dict[str, object]:
     loss = evaluate_binary_loss(
         model,
         dataloader,
@@ -410,7 +492,7 @@ def run_tiny_overfit(
     optimizer = optimizer or build_optimizer(model, config)
     scaler = create_grad_scaler(resolved_device, use_amp=use_amp)
 
-    initial = _tiny_snapshot(
+    initial = _evaluation_snapshot(
         model,
         dataloader,
         device=resolved_device,
@@ -442,7 +524,7 @@ def run_tiny_overfit(
             global_step=global_step,
         )
         global_step = int(train_result["global_step"])
-        final = _tiny_snapshot(
+        final = _evaluation_snapshot(
             model,
             dataloader,
             device=resolved_device,
@@ -484,12 +566,447 @@ def run_tiny_overfit(
     }
 
 
+def _full_training_settings(config: Mapping[str, object]) -> dict[str, object]:
+    section = _training_section(config)
+    selection = config.get("selection", {})
+    if not isinstance(selection, Mapping):
+        raise ValueError("config['selection'] must be a mapping")
+
+    max_epochs = _locked_integer(
+        section,
+        "max_epochs",
+        DEFAULT_FULL_MAX_EPOCHS,
+        minimum=1,
+    )
+    patience = _locked_integer(
+        section,
+        "early_stopping_patience",
+        DEFAULT_EARLY_STOPPING_PATIENCE,
+        minimum=1,
+    )
+    min_delta = float(section.get("early_stopping_min_delta", 0.0))
+    seed = _locked_integer(section, "seed", DEFAULT_SEED, minimum=0)
+    mixed_precision = section.get("mixed_precision", True)
+    if min_delta != 0.0:
+        raise ValueError("Scorer V1 locks early_stopping_min_delta=0.0")
+    if not isinstance(mixed_precision, bool):
+        raise ValueError("training.mixed_precision must be boolean")
+    if str(selection.get("primary_metric", "roc_auc")) != "roc_auc":
+        raise ValueError("Scorer V1 selects checkpoints by validation ROC-AUC")
+    if str(selection.get("guardrail_metric", "fitb_2way")) != "fitb_2way":
+        raise ValueError("Scorer V1 locks fitb_2way as the guardrail metric")
+
+    return {
+        "max_epochs": max_epochs,
+        "patience": patience,
+        "min_delta": min_delta,
+        "seed": seed,
+        "mixed_precision": mixed_precision,
+    }
+
+
+def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _runtime_versions() -> dict[str, str]:
+    versions = {
+        "python": platform.python_version(),
+        "torch": str(torch.__version__),
+        "numpy": str(np.__version__),
+    }
+    for package, key in (("scikit-learn", "scikit_learn"), ("PyYAML", "pyyaml")):
+        try:
+            versions[key] = importlib_metadata.version(package)
+        except importlib_metadata.PackageNotFoundError:
+            versions[key] = "NOT_INSTALLED"
+    return versions
+
+
+def _capture_rng_state(train_dataloader) -> dict[str, object]:
+    numpy_state = np.random.get_state()
+    loader_generator = getattr(train_dataloader, "generator", None)
+    return {
+        "python_random_state": random.getstate(),
+        "numpy_random_state": {
+            "bit_generator": numpy_state[0],
+            "state": numpy_state[1].tolist(),
+            "position": int(numpy_state[2]),
+            "has_gauss": int(numpy_state[3]),
+            "cached_gaussian": float(numpy_state[4]),
+        },
+        "torch_cpu_rng_state": torch.get_rng_state(),
+        "torch_cuda_rng_state_all": (
+            torch.cuda.get_rng_state_all() if torch.cuda.is_available() else []
+        ),
+        "dataloader_generator_state": (
+            loader_generator.get_state() if loader_generator is not None else None
+        ),
+    }
+
+
+def _restore_rng_state(state: Mapping[str, object], train_dataloader) -> None:
+    required = {
+        "python_random_state",
+        "numpy_random_state",
+        "torch_cpu_rng_state",
+        "torch_cuda_rng_state_all",
+        "dataloader_generator_state",
+    }
+    missing = sorted(required - set(state))
+    if missing:
+        raise ValueError(f"Checkpoint RNG state is missing keys: {missing}")
+
+    random.setstate(state["python_random_state"])
+    numpy_state = state["numpy_random_state"]
+    if not isinstance(numpy_state, Mapping):
+        raise ValueError("Checkpoint NumPy RNG state must be a mapping")
+    np.random.set_state(
+        (
+            str(numpy_state["bit_generator"]),
+            np.asarray(numpy_state["state"], dtype=np.uint32),
+            int(numpy_state["position"]),
+            int(numpy_state["has_gauss"]),
+            float(numpy_state["cached_gaussian"]),
+        )
+    )
+    torch.set_rng_state(state["torch_cpu_rng_state"])
+
+    cuda_states = state["torch_cuda_rng_state_all"]
+    if cuda_states:
+        if not torch.cuda.is_available():
+            raise RuntimeError("Cannot restore CUDA RNG state without CUDA")
+        torch.cuda.set_rng_state_all(cuda_states)
+
+    loader_state = state["dataloader_generator_state"]
+    loader_generator = getattr(train_dataloader, "generator", None)
+    if loader_state is not None:
+        if loader_generator is None:
+            raise ValueError(
+                "Checkpoint has DataLoader RNG state but loader has no generator"
+            )
+        loader_generator.set_state(loader_state)
+
+
+def _resume_extra_state(payload: Mapping[str, object]) -> dict[str, object]:
+    required = {
+        "training_history",
+        "epochs_without_improvement",
+        "best_epoch",
+        "best_validation_metrics",
+        "rng_state",
+    }
+    missing = sorted(required - set(payload))
+    if missing:
+        raise ValueError(f"S3 checkpoint is missing resume state: {missing}")
+    history = payload["training_history"]
+    if not isinstance(history, list):
+        raise ValueError("training_history in checkpoint must be a list")
+    if history and int(history[-1].get("epoch", -1)) != int(payload["epoch"]):
+        raise ValueError("Checkpoint epoch does not match training_history")
+    return {
+        "history": list(history),
+        "epochs_without_improvement": int(
+            payload["epochs_without_improvement"]
+        ),
+        "best_epoch": int(payload["best_epoch"]),
+        "best_validation_metrics": dict(payload["best_validation_metrics"]),
+        "rng_state": payload["rng_state"],
+        "grad_scaler_state_dict": payload.get("grad_scaler_state_dict"),
+    }
+
+
+def run_full_training(
+    model,
+    train_dataloader,
+    valid_dataloader,
+    config: Mapping[str, object],
+    *,
+    output_dir: Path | str,
+    provenance: Mapping[str, object],
+    git_state: Mapping[str, object],
+    device=None,
+    resume: bool = False,
+    require_clean_git: bool = True,
+    epoch_callback=None,
+) -> dict[str, object]:
+    """Run canonical S3 train/validation orchestration.
+
+    Checkpoint selection is strictly ``valid ROC-AUC > best ROC-AUC``.  FITB is
+    reported as a guardrail and never used as a hidden tie-breaker.  The test
+    split cannot enter this API because only train and validation loaders are
+    accepted.
+    """
+
+    require_training_dependencies()
+    settings = _full_training_settings(config)
+    resolved_device = resolve_device(device)
+    run_root = Path(output_dir)
+    best_path = run_root / "best.pt"
+    last_path = run_root / "last.pt"
+    history_path = run_root / "training_history.json"
+    metrics_path = run_root / "validation_metrics.json"
+    config_path = run_root / "run_config.json"
+    summary_path = run_root / "run_summary.json"
+
+    if not isinstance(provenance, Mapping):
+        raise TypeError("provenance must be a mapping")
+    if not isinstance(git_state, Mapping):
+        raise TypeError("git_state must be a mapping")
+    if "git_commit" not in git_state or "git_tree_clean" not in git_state:
+        raise ValueError("git_state must contain git_commit and git_tree_clean")
+    if require_clean_git and git_state["git_tree_clean"] is not True:
+        raise RuntimeError("Canonical S3 training requires a clean Git tree")
+
+    set_reproducible_seed(int(settings["seed"]))
+    model.to(resolved_device)
+    optimizer = build_optimizer(model, config)
+    scaler = create_grad_scaler(
+        resolved_device,
+        use_amp=bool(settings["mixed_precision"]),
+    )
+
+    # Validate every locked checkpoint field before spending time on epoch 1.
+    build_checkpoint_payload(
+        model=model,
+        optimizer=optimizer,
+        epoch=0,
+        global_step=0,
+        config=config,
+        provenance=provenance,
+        git_commit=str(git_state["git_commit"]),
+        git_tree_clean=bool(git_state["git_tree_clean"]),
+        seed=int(settings["seed"]),
+        best_valid_roc_auc=0.0,
+        validation_metrics={},
+    )
+
+    state_paths = (
+        best_path,
+        last_path,
+        history_path,
+        metrics_path,
+        config_path,
+        summary_path,
+    )
+    if not resume and any(path.exists() for path in state_paths):
+        existing = [str(path) for path in state_paths if path.exists()]
+        raise FileExistsError(
+            "S3 output already contains run state; use resume=True or a new "
+            f"output directory: {existing}"
+        )
+    if resume and not last_path.is_file():
+        raise FileNotFoundError(f"Cannot resume without {last_path}")
+
+    history: list[dict[str, object]] = []
+    global_step = 0
+    start_epoch = 1
+    best_valid_roc_auc = -math.inf
+    best_epoch = 0
+    best_validation_metrics: dict[str, object] = {}
+    last_validation_metrics: dict[str, object] = {}
+    epochs_without_improvement = 0
+
+    if resume:
+        expected = {
+            "scorer_version": SCORER_VERSION,
+            "config": dict(config),
+            "git_commit": str(git_state["git_commit"]),
+            "git_tree_clean": bool(git_state["git_tree_clean"]),
+            **dict(provenance),
+        }
+        payload = restore_checkpoint(
+            last_path,
+            model=model,
+            optimizer=optimizer,
+            expected=expected,
+            map_location=resolved_device,
+        )
+        resume_state = _resume_extra_state(payload)
+        history = resume_state["history"]
+        epochs_without_improvement = resume_state[
+            "epochs_without_improvement"
+        ]
+        best_epoch = resume_state["best_epoch"]
+        best_validation_metrics = resume_state["best_validation_metrics"]
+        best_valid_roc_auc = float(payload["best_valid_roc_auc"])
+        last_validation_metrics = dict(payload["validation_metrics"])
+        global_step = int(payload["global_step"])
+        start_epoch = int(payload["epoch"]) + 1
+        if scaler is not None and resume_state["grad_scaler_state_dict"] is not None:
+            scaler.load_state_dict(resume_state["grad_scaler_state_dict"])
+        _restore_rng_state(resume_state["rng_state"], train_dataloader)
+        # A disconnect may happen after last.pt but before best.pt/JSON logs.
+        # The complete resume state in last.pt is therefore the recovery source.
+        if best_epoch == int(payload["epoch"]):
+            save_checkpoint(best_path, payload)
+
+    run_root.mkdir(parents=True, exist_ok=True)
+    run_config = {
+        "stage": "S3",
+        "scorer_version": SCORER_VERSION,
+        "config": dict(config),
+        "provenance": dict(provenance),
+        "git_state": dict(git_state),
+        "device": str(resolved_device),
+        "runtime_versions": _runtime_versions(),
+        "amp_enabled": bool(
+            settings["mixed_precision"] and resolved_device.type == "cuda"
+        ),
+    }
+    _write_json_atomic(config_path, run_config)
+    if resume:
+        _write_json_atomic(history_path, {"epochs": history})
+        _write_json_atomic(
+            metrics_path,
+            {
+                "best_epoch": best_epoch,
+                "best_valid_roc_auc": best_valid_roc_auc,
+                "best_validation_metrics": best_validation_metrics,
+                "last_validation_metrics": last_validation_metrics,
+            },
+        )
+
+    status = (
+        "EARLY_STOPPED"
+        if epochs_without_improvement >= int(settings["patience"])
+        else "COMPLETED_MAX_EPOCHS"
+    )
+    for epoch in range(start_epoch, int(settings["max_epochs"]) + 1):
+        if status == "EARLY_STOPPED":
+            break
+        train_result = train_one_epoch(
+            model,
+            train_dataloader,
+            optimizer,
+            device=resolved_device,
+            use_amp=bool(settings["mixed_precision"]),
+            scaler=scaler,
+            global_step=global_step,
+        )
+        global_step = int(train_result["global_step"])
+        validation = _evaluation_snapshot(
+            model,
+            valid_dataloader,
+            device=resolved_device,
+            use_amp=bool(settings["mixed_precision"]),
+        )
+        last_validation_metrics = dict(validation)
+        current_auc = float(validation["roc_auc"])
+        if not math.isfinite(current_auc) or not 0.0 <= current_auc <= 1.0:
+            raise RuntimeError("Validation ROC-AUC must be finite and within [0, 1]")
+        improved = current_auc > best_valid_roc_auc
+        if improved:
+            best_valid_roc_auc = current_auc
+            best_epoch = epoch
+            best_validation_metrics = dict(validation)
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+
+        epoch_record = {
+            "epoch": epoch,
+            "global_step": global_step,
+            "train_loss": float(train_result["loss"]),
+            "valid_loss": float(validation["loss"]),
+            "valid_roc_auc": current_auc,
+            "valid_fitb_2way": float(validation["fitb_2way"]),
+            "valid_mean_logit_margin": float(
+                validation["mean_logit_margin"]
+            ),
+            "valid_median_logit_margin": float(
+                validation["median_logit_margin"]
+            ),
+            "improved": improved,
+            "epochs_without_improvement": epochs_without_improvement,
+        }
+        history.append(epoch_record)
+
+        extra_state = {
+            "training_history": history,
+            "epochs_without_improvement": epochs_without_improvement,
+            "best_epoch": best_epoch,
+            "best_validation_metrics": best_validation_metrics,
+            "rng_state": _capture_rng_state(train_dataloader),
+            "grad_scaler_state_dict": (
+                scaler.state_dict() if scaler is not None else None
+            ),
+        }
+        checkpoint_payload = build_checkpoint_payload(
+            model=model,
+            optimizer=optimizer,
+            epoch=epoch,
+            global_step=global_step,
+            config=config,
+            provenance=provenance,
+            git_commit=str(git_state["git_commit"]),
+            git_tree_clean=bool(git_state["git_tree_clean"]),
+            seed=int(settings["seed"]),
+            best_valid_roc_auc=best_valid_roc_auc,
+            validation_metrics=validation,
+            extra_state=extra_state,
+        )
+        save_epoch_checkpoints(
+            run_root,
+            checkpoint_payload,
+            is_best=improved,
+        )
+        _write_json_atomic(history_path, {"epochs": history})
+        _write_json_atomic(
+            metrics_path,
+            {
+                "best_epoch": best_epoch,
+                "best_valid_roc_auc": best_valid_roc_auc,
+                "best_validation_metrics": best_validation_metrics,
+                "last_validation_metrics": last_validation_metrics,
+            },
+        )
+
+        if epoch_callback is not None:
+            epoch_callback(dict(epoch_record))
+        if epochs_without_improvement >= int(settings["patience"]):
+            status = "EARLY_STOPPED"
+            break
+
+    epochs_completed = int(history[-1]["epoch"]) if history else start_epoch - 1
+    summary = {
+        "stage": "S3",
+        "status": status,
+        "scorer_version": SCORER_VERSION,
+        "epochs_completed": epochs_completed,
+        "global_step": global_step,
+        "best_epoch": best_epoch,
+        "best_valid_roc_auc": best_valid_roc_auc,
+        "best_validation_metrics": best_validation_metrics,
+        "last_validation_metrics": last_validation_metrics,
+        "early_stopping_patience": int(settings["patience"]),
+        "output_paths": {
+            "best_checkpoint": str(best_path),
+            "last_checkpoint": str(last_path),
+            "training_history": str(history_path),
+            "validation_metrics": str(metrics_path),
+            "run_config": str(config_path),
+            "run_summary": str(summary_path),
+        },
+    }
+    _write_json_atomic(summary_path, summary)
+    return {**summary, "history": history}
+
+
 __all__: Sequence[str] = (
     "build_optimizer",
+    "build_full_training_loaders",
     "build_tiny_overfit_loader",
     "create_grad_scaler",
     "evaluate_binary_loss",
     "resolve_device",
+    "run_full_training",
     "run_tiny_overfit",
     "set_reproducible_seed",
     "train_one_epoch",
