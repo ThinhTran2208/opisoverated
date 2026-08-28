@@ -8,7 +8,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.scorer.checkpoint import canonical_provenance, load_checkpoint
-from src.scorer.train import run_full_training, torch
+from src.scorer.train import (
+    _capture_rng_state,
+    _restore_rng_state,
+    run_full_training,
+    torch,
+)
 
 
 @unittest.skipUnless(torch is not None, "PyTorch is not installed in portability CI")
@@ -197,6 +202,39 @@ class ScorerFullTrainingTests(unittest.TestCase):
                 [row["epoch"] for row in summary["history"]], [1, 2, 3, 4]
             )
             self.assertEqual(load_checkpoint(Path(tmp) / "last.pt")["epoch"], 4)
+
+    def test_rng_restore_uses_cpu_byte_tensors(self):
+        class Loader:
+            generator = torch.Generator().manual_seed(123)
+
+        loader = Loader()
+        saved = _capture_rng_state(loader)
+        expected_torch_state = saved["torch_cpu_rng_state"].clone()
+        expected_loader_state = saved["dataloader_generator_state"].clone()
+
+        torch.manual_seed(999)
+        loader.generator.manual_seed(999)
+        _restore_rng_state(saved, loader)
+
+        self.assertEqual(torch.get_rng_state().device.type, "cpu")
+        self.assertEqual(torch.get_rng_state().dtype, torch.uint8)
+        self.assertTrue(torch.equal(torch.get_rng_state(), expected_torch_state))
+        self.assertTrue(
+            torch.equal(loader.generator.get_state(), expected_loader_state)
+        )
+
+    def test_rng_restore_rejects_non_byte_cpu_state(self):
+        class Loader:
+            generator = torch.Generator().manual_seed(123)
+
+        loader = Loader()
+        saved = _capture_rng_state(loader)
+        saved["torch_cpu_rng_state"] = saved["torch_cpu_rng_state"].to(
+            torch.int64
+        )
+
+        with self.assertRaisesRegex(ValueError, "rank-1 torch.uint8"):
+            _restore_rng_state(saved, loader)
 
     def test_dirty_git_tree_is_blocked_before_training(self):
         with tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(

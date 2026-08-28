@@ -651,6 +651,24 @@ def _capture_rng_state(train_dataloader) -> dict[str, object]:
     }
 
 
+def _cpu_byte_rng_state(value: object, *, name: str) -> torch.Tensor:
+    """Return a CPU ByteTensor accepted by PyTorch RNG restore APIs.
+
+    ``torch.load(..., map_location="cuda")`` also moves tensors stored in
+    checkpoint metadata to CUDA.  RNG restore APIs are stricter than model and
+    optimizer loading: CPU and DataLoader generator states must be CPU byte
+    tensors, while CUDA RNG restore also accepts its saved state from CPU.
+    """
+
+    if not isinstance(value, torch.Tensor):
+        raise ValueError(f"Checkpoint {name} must be a torch.Tensor")
+    if value.dtype != torch.uint8 or value.ndim != 1:
+        raise ValueError(
+            f"Checkpoint {name} must be a rank-1 torch.uint8 tensor"
+        )
+    return value.detach().cpu().contiguous()
+
+
 def _restore_rng_state(state: Mapping[str, object], train_dataloader) -> None:
     required = {
         "python_random_state",
@@ -676,13 +694,28 @@ def _restore_rng_state(state: Mapping[str, object], train_dataloader) -> None:
             float(numpy_state["cached_gaussian"]),
         )
     )
-    torch.set_rng_state(state["torch_cpu_rng_state"])
+    torch.set_rng_state(
+        _cpu_byte_rng_state(
+            state["torch_cpu_rng_state"], name="torch_cpu_rng_state"
+        )
+    )
 
     cuda_states = state["torch_cuda_rng_state_all"]
     if cuda_states:
         if not torch.cuda.is_available():
             raise RuntimeError("Cannot restore CUDA RNG state without CUDA")
-        torch.cuda.set_rng_state_all(cuda_states)
+        if not isinstance(cuda_states, (list, tuple)):
+            raise ValueError(
+                "Checkpoint torch_cuda_rng_state_all must be a list or tuple"
+            )
+        torch.cuda.set_rng_state_all(
+            [
+                _cpu_byte_rng_state(
+                    value, name=f"torch_cuda_rng_state_all[{index}]"
+                )
+                for index, value in enumerate(cuda_states)
+            ]
+        )
 
     loader_state = state["dataloader_generator_state"]
     loader_generator = getattr(train_dataloader, "generator", None)
@@ -691,7 +724,11 @@ def _restore_rng_state(state: Mapping[str, object], train_dataloader) -> None:
             raise ValueError(
                 "Checkpoint has DataLoader RNG state but loader has no generator"
             )
-        loader_generator.set_state(loader_state)
+        loader_generator.set_state(
+            _cpu_byte_rng_state(
+                loader_state, name="dataloader_generator_state"
+            )
+        )
 
 
 def _resume_extra_state(payload: Mapping[str, object]) -> dict[str, object]:
