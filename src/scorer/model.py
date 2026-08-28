@@ -17,6 +17,7 @@ ignores padded positions through ``item_mask``.
 
 from __future__ import annotations
 
+import math
 from typing import Mapping
 
 try:
@@ -33,6 +34,7 @@ CATEGORY_COUNT = 7
 CATEGORY_VOCAB_SIZE = 8
 CATEGORY_PADDING_IDX = 0
 CATEGORY_EMBEDDING_DIM = 32
+CATEGORY_EMBEDDING_INIT_STD = 0.02
 ITEM_PROJECTION_DIM = 256
 ITEM_HIDDEN_DIM = 128
 PAIR_HIDDEN_DIM = 128
@@ -68,6 +70,7 @@ class TypeAwarePairwiseScorer(_ModuleBase):
         category_vocab_size: int = CATEGORY_VOCAB_SIZE,
         category_padding_idx: int = CATEGORY_PADDING_IDX,
         category_embedding_dim: int = CATEGORY_EMBEDDING_DIM,
+        category_embedding_init_std: float = CATEGORY_EMBEDDING_INIT_STD,
         item_projection_dim: int = ITEM_PROJECTION_DIM,
         item_hidden_dim: int = ITEM_HIDDEN_DIM,
         pair_hidden_dim: int = PAIR_HIDDEN_DIM,
@@ -91,6 +94,11 @@ class TypeAwarePairwiseScorer(_ModuleBase):
             )
         if category_padding_idx != 0:
             raise ValueError("Scorer V1 locks category_padding_idx = 0")
+        if (
+            not math.isfinite(float(category_embedding_init_std))
+            or float(category_embedding_init_std) <= 0.0
+        ):
+            raise ValueError("category_embedding_init_std must be positive and finite")
         if not 0.0 <= dropout < 1.0:
             raise ValueError("dropout must satisfy 0 <= dropout < 1")
         if min_items < 2 or max_items < min_items:
@@ -110,6 +118,7 @@ class TypeAwarePairwiseScorer(_ModuleBase):
         self.category_vocab_size = int(category_vocab_size)
         self.category_padding_idx = int(category_padding_idx)
         self.category_embedding_dim = int(category_embedding_dim)
+        self.category_embedding_init_std = float(category_embedding_init_std)
         self.item_projection_dim = int(item_projection_dim)
         self.item_hidden_dim = int(item_hidden_dim)
         self.pair_hidden_dim = int(pair_hidden_dim)
@@ -123,6 +132,13 @@ class TypeAwarePairwiseScorer(_ModuleBase):
             embedding_dim=self.category_embedding_dim,
             padding_idx=self.category_padding_idx,
         )
+        with torch.no_grad():
+            nn.init.normal_(
+                self.category_embedding.weight,
+                mean=0.0,
+                std=self.category_embedding_init_std,
+            )
+            self.category_embedding.weight[self.category_padding_idx].zero_()
 
         self.item_mlp = nn.Sequential(
             nn.Linear(
@@ -186,6 +202,12 @@ class TypeAwarePairwiseScorer(_ModuleBase):
             ),
             category_embedding_dim=int(
                 model_config.get("category_embedding_dim", CATEGORY_EMBEDDING_DIM)
+            ),
+            category_embedding_init_std=float(
+                model_config.get(
+                    "category_embedding_init_std",
+                    CATEGORY_EMBEDDING_INIT_STD,
+                )
             ),
             item_projection_dim=int(
                 model_config.get("item_projection_dim", ITEM_PROJECTION_DIM)
