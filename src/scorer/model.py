@@ -84,6 +84,8 @@ class TypeAwarePairwiseScorer(_ModuleBase):
 
         if embedding_dim <= 0:
             raise ValueError("embedding_dim must be positive")
+        if category_embedding_dim <= 0:
+            raise ValueError("category_embedding_dim must be positive")
         if category_count != category_vocab_size - 1:
             raise ValueError(
                 "Scorer V1 expects category_vocab_size = category_count + 1 "
@@ -123,6 +125,19 @@ class TypeAwarePairwiseScorer(_ModuleBase):
             embedding_dim=self.category_embedding_dim,
             padding_idx=self.category_padding_idx,
         )
+        # FashionCLIP inputs are frozen L2-normalized vectors (norm ~= 1).  The
+        # default nn.Embedding initialization gives 32-d category vectors norm
+        # ~= sqrt(32), which experimentally overwhelmed the FashionCLIP signal
+        # and collapsed full-data training.  Initialize each learned category
+        # vector with expected squared norm ~= 1 instead.
+        self.category_embedding_init_std = self.category_embedding_dim ** -0.5
+        nn.init.normal_(
+            self.category_embedding.weight,
+            mean=0.0,
+            std=self.category_embedding_init_std,
+        )
+        with torch.no_grad():
+            self.category_embedding.weight[self.category_padding_idx].zero_()
 
         self.item_mlp = nn.Sequential(
             nn.Linear(
@@ -135,9 +150,7 @@ class TypeAwarePairwiseScorer(_ModuleBase):
             nn.ReLU(),
         )
 
-        pair_feature_dim = (
-            4 * self.item_hidden_dim + 2 * self.category_embedding_dim
-        )
+        pair_feature_dim = 4 * self.item_hidden_dim + 2 * self.category_embedding_dim
         self.pair_feature_dim = pair_feature_dim
 
         self.pair_mlp = nn.Sequential(
@@ -190,20 +203,14 @@ class TypeAwarePairwiseScorer(_ModuleBase):
             item_projection_dim=int(
                 model_config.get("item_projection_dim", ITEM_PROJECTION_DIM)
             ),
-            item_hidden_dim=int(
-                model_config.get("item_hidden_dim", ITEM_HIDDEN_DIM)
-            ),
-            pair_hidden_dim=int(
-                model_config.get("pair_hidden_dim", PAIR_HIDDEN_DIM)
-            ),
+            item_hidden_dim=int(model_config.get("item_hidden_dim", ITEM_HIDDEN_DIM)),
+            pair_hidden_dim=int(model_config.get("pair_hidden_dim", PAIR_HIDDEN_DIM)),
             output_hidden_dim=int(
                 model_config.get("output_hidden_dim", OUTPUT_HIDDEN_DIM)
             ),
             dropout=float(model_config.get("dropout", DROPOUT)),
             activation=str(model_config.get("activation", _SUPPORTED_ACTIVATION)),
-            aggregation=str(
-                model_config.get("aggregation", _SUPPORTED_AGGREGATION)
-            ),
+            aggregation=str(model_config.get("aggregation", _SUPPORTED_AGGREGATION)),
             pair_symmetry=str(
                 model_config.get("pair_symmetry", _SUPPORTED_PAIR_SYMMETRY)
             ),
@@ -236,9 +243,7 @@ class TypeAwarePairwiseScorer(_ModuleBase):
                 f"Expected embedding_dim={self.embedding_dim}, got {embedding_dim}"
             )
         if length > self.max_items:
-            raise ValueError(
-                f"Input length={length} exceeds max_items={self.max_items}"
-            )
+            raise ValueError(f"Input length={length} exceeds max_items={self.max_items}")
         if coarse_category_ids.shape != (batch_size, length):
             raise ValueError(
                 "coarse_category_ids must have shape [B, L] matching embeddings"
@@ -295,9 +300,7 @@ class TypeAwarePairwiseScorer(_ModuleBase):
         batch_size, length = item_mask.shape
         upper = torch.triu(
             torch.ones(
-                (length, length),
-                dtype=torch.bool,
-                device=item_mask.device,
+                (length, length), dtype=torch.bool, device=item_mask.device
             ),
             diagonal=1,
         )
@@ -314,7 +317,7 @@ class TypeAwarePairwiseScorer(_ModuleBase):
         item_mask,
         pair_mask=None,
     ) -> dict[str, object]:
-        """Return ``{"compatibility_logit": Tensor[B]}``.
+        """Return ``{\"compatibility_logit\": Tensor[B]}``.
 
         ``pair_mask`` is optional because it is derivable from ``item_mask``.
         When supplied by the S1 collator, it is validated against the canonical
@@ -337,10 +340,7 @@ class TypeAwarePairwiseScorer(_ModuleBase):
             )
 
         category_vectors = self.category_embedding(coarse_category_ids)
-        item_features = torch.cat(
-            [item_embeddings, category_vectors],
-            dim=-1,
-        )
+        item_features = torch.cat([item_embeddings, category_vectors], dim=-1)
         item_representations = self.item_mlp(item_features)
 
         _, length, _ = item_representations.shape
@@ -357,12 +357,10 @@ class TypeAwarePairwiseScorer(_ModuleBase):
         interaction = h_i * h_j
 
         forward_features = torch.cat(
-            [h_i, h_j, abs_difference, interaction, c_i, c_j],
-            dim=-1,
+            [h_i, h_j, abs_difference, interaction, c_i, c_j], dim=-1
         )
         reverse_features = torch.cat(
-            [h_j, h_i, abs_difference, interaction, c_j, c_i],
-            dim=-1,
+            [h_j, h_i, abs_difference, interaction, c_j, c_i], dim=-1
         )
 
         forward_scores = self.pair_mlp(forward_features).squeeze(-1)
