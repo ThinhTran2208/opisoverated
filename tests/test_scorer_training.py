@@ -4,9 +4,14 @@ import unittest
 
 from src.scorer.dataset import build_pair_mask
 from src.scorer.train import (
+    _capture_rng_state,
+    _restore_rng_state,
     build_full_training_loaders,
     build_optimizer,
+    build_paired_training_loaders,
     build_tiny_overfit_loader,
+    paired_batch_logit_margins,
+    paired_logistic_ranking_loss,
     run_tiny_overfit,
     set_reproducible_seed,
     torch,
@@ -162,6 +167,160 @@ class ScorerTrainingTests(unittest.TestCase):
                     },
                 )
 
+    def test_paired_loader_keeps_every_family_in_one_batch(self):
+        config = {
+            "data": {"max_items": 8},
+            "training": {
+                "batch_size": 4,
+                "seed": 42,
+                "objective": "bce_plus_paired_logistic",
+                "paired_batching": True,
+                "paired_ranking_weight": 0.5,
+            },
+        }
+        train_dataset = self.ToyFamilyDataset(family_count=5)
+        valid_dataset = self.ToyFamilyDataset(family_count=2)
+        train_loader, valid_loader = build_paired_training_loaders(
+            train_dataset,
+            valid_dataset,
+            config,
+        )
+        self.assertIs(train_loader.generator, train_loader.batch_sampler.generator)
+
+        seen_ids = []
+        for batch in train_loader:
+            self.assertEqual(len(batch["sample_ids"]) % 2, 0)
+            positive_ids = {
+                sample_id
+                for sample_id, label in zip(batch["sample_ids"], batch["labels"])
+                if float(label) == 1.0
+            }
+            negative_pair_ids = {
+                pair_id
+                for pair_id, label in zip(
+                    batch["paired_positive_sample_ids"], batch["labels"]
+                )
+                if float(label) == 0.0
+            }
+            self.assertEqual(positive_ids, negative_pair_ids)
+            seen_ids.extend(batch["sample_ids"])
+
+        self.assertEqual(len(seen_ids), len(train_dataset))
+        self.assertEqual(len(seen_ids), len(set(seen_ids)))
+        self.assertEqual(type(valid_loader.sampler).__name__, "SequentialSampler")
+
+    def test_paired_loader_order_is_reproducible(self):
+        config = {
+            "data": {"max_items": 8},
+            "training": {
+                "batch_size": 4,
+                "seed": 42,
+                "objective": "bce_plus_paired_logistic",
+                "paired_batching": True,
+                "paired_ranking_weight": 0.5,
+            },
+        }
+        dataset = self.ToyFamilyDataset(family_count=6)
+        first, _ = build_paired_training_loaders(dataset, dataset, config)
+        second, _ = build_paired_training_loaders(dataset, dataset, config)
+        first_order = [value for batch in first for value in batch["sample_ids"]]
+        second_order = [value for batch in second for value in batch["sample_ids"]]
+        self.assertEqual(first_order, second_order)
+
+    def test_paired_loader_order_resumes_at_next_epoch(self):
+        config = {
+            "data": {"max_items": 8},
+            "training": {
+                "batch_size": 4,
+                "seed": 42,
+                "objective": "bce_plus_paired_logistic",
+                "paired_batching": True,
+                "paired_ranking_weight": 0.5,
+            },
+        }
+        dataset = self.ToyFamilyDataset(family_count=6)
+        uninterrupted, _ = build_paired_training_loaders(dataset, dataset, config)
+        list(uninterrupted)
+        saved_state = _capture_rng_state(uninterrupted)
+        expected_next_epoch = [
+            value for batch in uninterrupted for value in batch["sample_ids"]
+        ]
+
+        resumed, _ = build_paired_training_loaders(dataset, dataset, config)
+        _restore_rng_state(saved_state, resumed)
+        actual_next_epoch = [
+            value for batch in resumed for value in batch["sample_ids"]
+        ]
+        self.assertEqual(actual_next_epoch, expected_next_epoch)
+
+    def test_paired_loader_rejects_odd_sample_batch_size(self):
+        dataset = self.ToyFamilyDataset(family_count=2)
+        with self.assertRaisesRegex(ValueError, "even"):
+            build_paired_training_loaders(
+                dataset,
+                dataset,
+                {
+                    "data": {"max_items": 8},
+                    "training": {
+                        "batch_size": 3,
+                        "seed": 42,
+                        "objective": "bce_plus_paired_logistic",
+                        "paired_batching": True,
+                        "paired_ranking_weight": 0.5,
+                    },
+                },
+            )
+
+    def test_paired_loader_rejects_incomplete_index_coverage(self):
+        dataset = self.ToyFamilyDataset(family_count=2)
+        dataset.pair_families = [(0, 1), (2, 99)]
+        with self.assertRaisesRegex(ValueError, "cover every train row"):
+            build_paired_training_loaders(
+                dataset,
+                dataset,
+                {
+                    "data": {"max_items": 8},
+                    "training": {
+                        "batch_size": 4,
+                        "seed": 42,
+                        "objective": "bce_plus_paired_logistic",
+                        "paired_batching": True,
+                        "paired_ranking_weight": 0.5,
+                    },
+                },
+            )
+
+    def test_paired_margin_lookup_does_not_depend_on_row_order(self):
+        logits = torch.tensor([-0.5, 1.5, 0.25, 0.5], requires_grad=True)
+        labels = torch.tensor([0.0, 1.0, 0.0, 1.0])
+        margins = paired_batch_logit_margins(
+            logits,
+            labels,
+            ["n1", "p2", "n2", "p1"],
+            ["p1", None, "p2", None],
+        )
+        self.assertTrue(torch.equal(margins, torch.tensor([1.25, 1.0])))
+
+        loss = paired_logistic_ranking_loss(
+            logits,
+            labels,
+            ["n1", "p2", "n2", "p1"],
+            ["p1", None, "p2", None],
+        )
+        expected = torch.nn.functional.softplus(-margins).mean()
+        self.assertTrue(torch.allclose(loss, expected))
+        loss.backward()
+        self.assertTrue(torch.isfinite(logits.grad).all())
+
+    def test_paired_margin_rejects_incomplete_batch(self):
+        with self.assertRaisesRegex(ValueError, "incomplete families"):
+            paired_batch_logit_margins(
+                torch.tensor([0.5, -0.5]),
+                torch.tensor([1.0, 0.0]),
+                ["p1", "n2"],
+                [None, "p2"],
+            )
+
     def test_train_one_epoch_updates_parameters(self):
         model = self.ToyPairModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.2)
@@ -172,6 +331,25 @@ class ScorerTrainingTests(unittest.TestCase):
         self.assertEqual(result["sample_count"], 8)
         self.assertEqual(result["global_step"], 1)
         self.assertGreater(result["loss"], 0.0)
+
+    def test_train_one_epoch_reports_paired_objective_components(self):
+        model = self.ToyPairModel()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.2)
+        result = train_one_epoch(
+            model,
+            [self._batch()],
+            optimizer,
+            device="cpu",
+            paired_ranking_weight=0.5,
+        )
+        self.assertEqual(result["paired_family_count"], 4)
+        self.assertGreater(result["bce_loss"], 0.0)
+        self.assertGreater(result["paired_ranking_loss"], 0.0)
+        self.assertAlmostEqual(
+            result["loss"],
+            result["bce_loss"] + 0.5 * result["paired_ranking_loss"],
+            places=6,
+        )
 
     def test_tiny_overfit_reaches_perfect_pair_metrics(self):
         model = self.ToyPairModel()

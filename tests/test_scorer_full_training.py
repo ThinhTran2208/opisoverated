@@ -140,6 +140,86 @@ class ScorerFullTrainingTests(unittest.TestCase):
             self.assertTrue((Path(tmp) / "validation_metrics.json").is_file())
             self.assertTrue((Path(tmp) / "run_summary.json").is_file())
 
+    def test_paired_experiment_passes_locked_weight_and_records_components(self):
+        config = json.loads(json.dumps(self.config))
+        config["experiment"] = {
+            "stage": "S3.1",
+            "name": "s3_1_paired_ranking_v1",
+        }
+        config["training"].update(
+            {
+                "max_epochs": 1,
+                "objective": "bce_plus_paired_logistic",
+                "paired_batching": True,
+                "paired_ranking_weight": 0.5,
+            }
+        )
+        seen = {}
+
+        def fake_train(*args, global_step=0, paired_ranking_weight=0.0, **kwargs):
+            del args, kwargs
+            seen["weight"] = paired_ranking_weight
+            return {
+                "loss": 0.9,
+                "bce_loss": 0.6,
+                "paired_ranking_loss": 0.6,
+                "mean_paired_margin": 0.2,
+                "paired_family_count": 2,
+                "sample_count": 4,
+                "batch_count": 1,
+                "global_step": global_step + 1,
+            }
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "src.scorer.train.train_one_epoch",
+            side_effect=fake_train,
+        ), patch(
+            "src.scorer.train._evaluation_snapshot",
+            return_value=self._validation(0.65),
+        ):
+            summary = run_full_training(
+                self.ToyModel(),
+                self.loader,
+                self.loader,
+                config,
+                output_dir=tmp,
+                provenance=self.provenance,
+                git_state=self.git_state,
+                device="cpu",
+            )
+
+        self.assertEqual(seen["weight"], 0.5)
+        self.assertEqual(summary["stage"], "S3.1")
+        self.assertEqual(summary["experiment_name"], "s3_1_paired_ranking_v1")
+        self.assertEqual(summary["objective"], "bce_plus_paired_logistic")
+        self.assertEqual(summary["history"][0]["train_bce_loss"], 0.6)
+        self.assertEqual(
+            summary["history"][0]["train_paired_ranking_loss"], 0.6
+        )
+
+    def test_paired_objective_rejects_missing_pair_batching(self):
+        config = json.loads(json.dumps(self.config))
+        config["training"].update(
+            {
+                "objective": "bce_plus_paired_logistic",
+                "paired_batching": False,
+                "paired_ranking_weight": 0.5,
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(
+            ValueError, "paired_batching=true"
+        ):
+            run_full_training(
+                self.ToyModel(),
+                self.loader,
+                self.loader,
+                config,
+                output_dir=tmp,
+                provenance=self.provenance,
+                git_state=self.git_state,
+                device="cpu",
+            )
+
     def test_resume_continues_after_last_completed_epoch(self):
         config = json.loads(json.dumps(self.config))
         config["training"]["max_epochs"] = 4

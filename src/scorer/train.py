@@ -52,6 +52,8 @@ DEFAULT_TINY_MAX_EPOCHS = 300
 DEFAULT_FULL_BATCH_SIZE = 256
 DEFAULT_FULL_MAX_EPOCHS = 30
 DEFAULT_EARLY_STOPPING_PATIENCE = 5
+BASELINE_OBJECTIVE = "bce"
+PAIRED_RANKING_OBJECTIVE = "bce_plus_paired_logistic"
 
 
 def require_training_dependencies() -> None:
@@ -199,6 +201,142 @@ def build_full_training_loaders(
     return train_loader, valid_loader
 
 
+class PairedFamilyBatchSampler:
+    """Yield shuffled batches made only from complete positive-negative families."""
+
+    def __init__(
+        self,
+        families: Sequence[tuple[int, int]],
+        *,
+        sample_batch_size: int,
+        generator,
+    ) -> None:
+        require_training_dependencies()
+        if sample_batch_size < 2 or sample_batch_size % 2 != 0:
+            raise ValueError("paired sample_batch_size must be a positive even number")
+        if not isinstance(generator, torch.Generator):
+            raise TypeError("paired batch sampler requires a torch.Generator")
+        if not families:
+            raise ValueError("paired batch sampler requires at least one family")
+
+        normalized: list[tuple[int, int]] = []
+        seen_indices: set[int] = set()
+        for family_index, family in enumerate(families):
+            if not isinstance(family, (list, tuple)) or len(family) != 2:
+                raise ValueError(
+                    f"Family {family_index} must contain exactly two indices"
+                )
+            positive_index, negative_index = family
+            if (
+                isinstance(positive_index, bool)
+                or not isinstance(positive_index, int)
+                or isinstance(negative_index, bool)
+                or not isinstance(negative_index, int)
+                or positive_index < 0
+                or negative_index < 0
+                or positive_index == negative_index
+            ):
+                raise ValueError(f"Family {family_index} has invalid sample indices")
+            if positive_index in seen_indices or negative_index in seen_indices:
+                raise ValueError("Paired families contain duplicate sample indices")
+            seen_indices.update((positive_index, negative_index))
+            normalized.append((positive_index, negative_index))
+
+        self.families = tuple(normalized)
+        self.families_per_batch = sample_batch_size // 2
+        self.generator = generator
+
+    def __iter__(self):
+        order = torch.randperm(
+            len(self.families), generator=self.generator
+        ).tolist()
+        for start in range(0, len(order), self.families_per_batch):
+            batch: list[int] = []
+            for position in order[start : start + self.families_per_batch]:
+                batch.extend(self.families[position])
+            yield batch
+
+    def __len__(self) -> int:
+        return math.ceil(len(self.families) / self.families_per_batch)
+
+
+def build_paired_training_loaders(
+    train_dataset,
+    valid_dataset,
+    config: Mapping[str, object],
+    *,
+    num_workers: int = 0,
+) -> tuple[object, object]:
+    """Build an S3.1 train loader that never separates a frozen pair family."""
+
+    require_training_dependencies()
+    section = _training_section(config)
+    data_section = config.get("data", {})
+    if not isinstance(data_section, Mapping):
+        raise ValueError("config['data'] must be a mapping")
+
+    objective = str(section.get("objective", BASELINE_OBJECTIVE)).strip().lower()
+    if objective != PAIRED_RANKING_OBJECTIVE:
+        raise ValueError(
+            "Paired loaders require "
+            f"training.objective={PAIRED_RANKING_OBJECTIVE!r}"
+        )
+    if section.get("paired_batching") is not True:
+        raise ValueError("Paired loaders require training.paired_batching=true")
+
+    batch_size = _locked_integer(
+        section,
+        "batch_size",
+        DEFAULT_FULL_BATCH_SIZE,
+        minimum=2,
+    )
+    if batch_size % 2 != 0:
+        raise ValueError("Paired training requires an even training.batch_size")
+    seed = _locked_integer(section, "seed", DEFAULT_SEED, minimum=0)
+    max_items = int(data_section.get("max_items", MAX_ITEMS))
+    if num_workers < 0:
+        raise ValueError("num_workers must be >= 0")
+    if len(train_dataset) < 2 or len(valid_dataset) < 1:
+        raise ValueError("Train and validation datasets must be non-empty")
+
+    families = list(getattr(train_dataset, "pair_families", []))
+    if len(families) * 2 != len(train_dataset):
+        raise ValueError(
+            "Paired training requires complete one-positive/one-negative "
+            "coverage of the train dataset"
+        )
+    covered_indices = sorted(index for family in families for index in family)
+    if covered_indices != list(range(len(train_dataset))):
+        raise ValueError(
+            "Paired training families must cover every train row exactly once"
+        )
+
+    train_generator = torch.Generator()
+    train_generator.manual_seed(seed)
+    batch_sampler = PairedFamilyBatchSampler(
+        families,
+        sample_batch_size=batch_size,
+        generator=train_generator,
+    )
+    collate_fn = partial(collate_scorer_batch, max_items=max_items)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_sampler=batch_sampler,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        generator=train_generator,
+    )
+    valid_loader = DataLoader(
+        valid_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        drop_last=False,
+    )
+    return train_loader, valid_loader
+
+
 def build_tiny_overfit_loader(
     dataset,
     *,
@@ -298,6 +436,100 @@ def _extract_logits(output: object, labels) -> object:
     return logits
 
 
+def paired_batch_logit_margins(
+    logits,
+    labels,
+    sample_ids: Sequence[object],
+    paired_positive_sample_ids: Sequence[object],
+):
+    """Return ``positive_logit - negative_logit`` for each complete batch family.
+
+    Pair recovery uses IDs rather than row adjacency so shuffling inside a batch
+    cannot silently change the training target.
+    """
+
+    require_training_dependencies()
+    if not isinstance(logits, torch.Tensor) or logits.ndim != 1:
+        raise ValueError("paired ranking logits must be a rank-1 Tensor [B]")
+    if not isinstance(labels, torch.Tensor) or labels.shape != logits.shape:
+        raise ValueError("paired ranking labels must match logits shape [B]")
+    if len(sample_ids) != len(logits) or len(paired_positive_sample_ids) != len(
+        logits
+    ):
+        raise ValueError("paired ranking IDs must match logits batch size")
+
+    normalized_ids = [str(value).strip() for value in sample_ids]
+    if any(not value for value in normalized_ids):
+        raise ValueError("paired ranking sample_ids must be non-empty")
+    if len(normalized_ids) != len(set(normalized_ids)):
+        raise ValueError("paired ranking sample_ids must be unique within a batch")
+
+    label_values = labels.detach().cpu().tolist()
+    positives: dict[str, int] = {}
+    negatives: dict[str, list[int]] = {}
+    for index, (sample_id, raw_label, raw_pair_id) in enumerate(
+        zip(normalized_ids, label_values, paired_positive_sample_ids)
+    ):
+        label = int(raw_label)
+        if label not in (0, 1) or float(raw_label) != label:
+            raise ValueError("paired ranking labels must contain binary values 0/1")
+        pair_id = (
+            None
+            if raw_pair_id in (None, "")
+            else str(raw_pair_id).strip()
+        )
+        if label == 1:
+            if pair_id is not None:
+                raise ValueError(
+                    f"Positive {sample_id} must not reference another positive"
+                )
+            positives[sample_id] = index
+        else:
+            if not pair_id:
+                raise ValueError(
+                    f"Negative {sample_id} is missing paired_positive_sample_id"
+                )
+            negatives.setdefault(pair_id, []).append(index)
+
+    if set(positives) != set(negatives):
+        missing_negatives = sorted(set(positives) - set(negatives))
+        missing_positives = sorted(set(negatives) - set(positives))
+        raise ValueError(
+            "Paired ranking batch contains incomplete families: "
+            f"missing_negatives={missing_negatives[:5]}, "
+            f"missing_positives={missing_positives[:5]}"
+        )
+
+    margins = []
+    for positive_id, positive_index in positives.items():
+        negative_indices = negatives[positive_id]
+        if len(negative_indices) != 1:
+            raise ValueError(
+                f"Positive {positive_id} must have exactly one paired negative"
+            )
+        margins.append(logits[positive_index] - logits[negative_indices[0]])
+    if not margins:
+        raise ValueError("Paired ranking batch contains no complete families")
+    return torch.stack(margins).float()
+
+
+def paired_logistic_ranking_loss(
+    logits,
+    labels,
+    sample_ids: Sequence[object],
+    paired_positive_sample_ids: Sequence[object],
+):
+    """Smoothly penalize non-positive paired margins with ``softplus(-margin)``."""
+
+    margins = paired_batch_logit_margins(
+        logits,
+        labels,
+        sample_ids,
+        paired_positive_sample_ids,
+    )
+    return torch.nn.functional.softplus(-margins).mean()
+
+
 def _autocast_context(device, enabled: bool):
     if not enabled:
         return nullcontext()
@@ -339,8 +571,9 @@ def train_one_epoch(
     use_amp: bool = False,
     scaler=None,
     global_step: int = 0,
+    paired_ranking_weight: float = 0.0,
 ) -> dict[str, int | float]:
-    """Train one epoch with canonical BCE-with-logits semantics."""
+    """Train one epoch with BCE and optional paired logistic ranking loss."""
 
     require_training_dependencies()
     resolved_device = resolve_device(device)
@@ -351,8 +584,15 @@ def train_one_epoch(
     scaler = scaler if scaler is not None else create_grad_scaler(
         resolved_device, use_amp=amp_enabled
     )
+    ranking_weight = float(paired_ranking_weight)
+    if not math.isfinite(ranking_weight) or ranking_weight < 0.0:
+        raise ValueError("paired_ranking_weight must be finite and >= 0")
 
     loss_sum = 0.0
+    bce_loss_sum = 0.0
+    ranking_loss_sum = 0.0
+    paired_margin_sum = 0.0
+    paired_family_count = 0
     sample_count = 0
     batch_count = 0
     for batch in dataloader:
@@ -368,7 +608,18 @@ def train_one_epoch(
         with _autocast_context(resolved_device, amp_enabled):
             output = model(**_model_inputs(batch, resolved_device))
             logits = _extract_logits(output, labels)
-            loss = criterion(logits, labels)
+            bce_loss = criterion(logits, labels)
+            ranking_loss = logits.new_zeros((), dtype=torch.float32)
+            margins = None
+            if ranking_weight > 0.0:
+                margins = paired_batch_logit_margins(
+                    logits,
+                    labels,
+                    batch.get("sample_ids", []),
+                    batch.get("paired_positive_sample_ids", []),
+                )
+                ranking_loss = torch.nn.functional.softplus(-margins).mean()
+            loss = bce_loss + ranking_weight * ranking_loss
         if loss.ndim != 0 or not torch.isfinite(loss):
             raise RuntimeError("Training loss must be one finite scalar")
 
@@ -385,6 +636,14 @@ def train_one_epoch(
 
         current_batch_size = int(labels.shape[0])
         loss_sum += float(loss.detach().cpu()) * current_batch_size
+        bce_loss_sum += float(bce_loss.detach().cpu()) * current_batch_size
+        if margins is not None:
+            current_family_count = int(margins.numel())
+            ranking_loss_sum += (
+                float(ranking_loss.detach().cpu()) * current_family_count
+            )
+            paired_margin_sum += float(margins.detach().sum().cpu())
+            paired_family_count += current_family_count
         sample_count += current_batch_size
         batch_count += 1
         global_step += 1
@@ -393,6 +652,18 @@ def train_one_epoch(
         raise ValueError("Training dataloader yielded no samples")
     return {
         "loss": loss_sum / sample_count,
+        "bce_loss": bce_loss_sum / sample_count,
+        "paired_ranking_loss": (
+            ranking_loss_sum / paired_family_count
+            if paired_family_count
+            else 0.0
+        ),
+        "mean_paired_margin": (
+            paired_margin_sum / paired_family_count
+            if paired_family_count
+            else 0.0
+        ),
+        "paired_family_count": paired_family_count,
         "sample_count": sample_count,
         "batch_count": batch_count,
         "global_step": global_step,
@@ -571,6 +842,9 @@ def _full_training_settings(config: Mapping[str, object]) -> dict[str, object]:
     selection = config.get("selection", {})
     if not isinstance(selection, Mapping):
         raise ValueError("config['selection'] must be a mapping")
+    experiment = config.get("experiment", {})
+    if not isinstance(experiment, Mapping):
+        raise ValueError("config['experiment'] must be a mapping when provided")
 
     max_epochs = _locked_integer(
         section,
@@ -587,14 +861,42 @@ def _full_training_settings(config: Mapping[str, object]) -> dict[str, object]:
     min_delta = float(section.get("early_stopping_min_delta", 0.0))
     seed = _locked_integer(section, "seed", DEFAULT_SEED, minimum=0)
     mixed_precision = section.get("mixed_precision", True)
+    objective = str(section.get("objective", BASELINE_OBJECTIVE)).strip().lower()
+    paired_batching = section.get("paired_batching", False)
+    ranking_weight = float(section.get("paired_ranking_weight", 0.0))
     if min_delta != 0.0:
         raise ValueError("Scorer V1 locks early_stopping_min_delta=0.0")
     if not isinstance(mixed_precision, bool):
         raise ValueError("training.mixed_precision must be boolean")
+    if not isinstance(paired_batching, bool):
+        raise ValueError("training.paired_batching must be boolean")
+    if not math.isfinite(ranking_weight) or ranking_weight < 0.0:
+        raise ValueError("training.paired_ranking_weight must be finite and >= 0")
+    if objective == BASELINE_OBJECTIVE:
+        if paired_batching or ranking_weight != 0.0:
+            raise ValueError(
+                "BCE objective requires paired_batching=false and "
+                "paired_ranking_weight=0"
+            )
+    elif objective == PAIRED_RANKING_OBJECTIVE:
+        if not paired_batching or ranking_weight <= 0.0:
+            raise ValueError(
+                "Paired objective requires paired_batching=true and a positive "
+                "paired_ranking_weight"
+            )
+    else:
+        raise ValueError(f"Unsupported training.objective: {objective!r}")
     if str(selection.get("primary_metric", "roc_auc")) != "roc_auc":
         raise ValueError("Scorer V1 selects checkpoints by validation ROC-AUC")
     if str(selection.get("guardrail_metric", "fitb_2way")) != "fitb_2way":
         raise ValueError("Scorer V1 locks fitb_2way as the guardrail metric")
+
+    stage = str(experiment.get("stage", "S3")).strip()
+    experiment_name = str(
+        experiment.get("name", "s3_full_baseline")
+    ).strip()
+    if not stage or not experiment_name:
+        raise ValueError("Experiment stage and name must be non-empty strings")
 
     return {
         "max_epochs": max_epochs,
@@ -602,6 +904,11 @@ def _full_training_settings(config: Mapping[str, object]) -> dict[str, object]:
         "min_delta": min_delta,
         "seed": seed,
         "mixed_precision": mixed_precision,
+        "objective": objective,
+        "paired_batching": paired_batching,
+        "paired_ranking_weight": ranking_weight,
+        "stage": stage,
+        "experiment_name": experiment_name,
     }
 
 
@@ -773,7 +1080,7 @@ def run_full_training(
     require_clean_git: bool = True,
     epoch_callback=None,
 ) -> dict[str, object]:
-    """Run canonical S3 train/validation orchestration.
+    """Run canonical S3 or versioned post-baseline train/validation orchestration.
 
     Checkpoint selection is strictly ``valid ROC-AUC > best ROC-AUC``.  FITB is
     reported as a guardrail and never used as a hidden tie-breaker.  The test
@@ -886,7 +1193,8 @@ def run_full_training(
 
     run_root.mkdir(parents=True, exist_ok=True)
     run_config = {
-        "stage": "S3",
+        "stage": settings["stage"],
+        "experiment_name": settings["experiment_name"],
         "scorer_version": SCORER_VERSION,
         "config": dict(config),
         "provenance": dict(provenance),
@@ -926,6 +1234,7 @@ def run_full_training(
             use_amp=bool(settings["mixed_precision"]),
             scaler=scaler,
             global_step=global_step,
+            paired_ranking_weight=float(settings["paired_ranking_weight"]),
         )
         global_step = int(train_result["global_step"])
         validation = _evaluation_snapshot(
@@ -951,6 +1260,15 @@ def run_full_training(
             "epoch": epoch,
             "global_step": global_step,
             "train_loss": float(train_result["loss"]),
+            "train_bce_loss": float(
+                train_result.get("bce_loss", train_result["loss"])
+            ),
+            "train_paired_ranking_loss": float(
+                train_result.get("paired_ranking_loss", 0.0)
+            ),
+            "train_mean_paired_margin": float(
+                train_result.get("mean_paired_margin", 0.0)
+            ),
             "valid_loss": float(validation["loss"]),
             "valid_roc_auc": current_auc,
             "valid_fitb_2way": float(validation["fitb_2way"]),
@@ -1013,7 +1331,10 @@ def run_full_training(
 
     epochs_completed = int(history[-1]["epoch"]) if history else start_epoch - 1
     summary = {
-        "stage": "S3",
+        "stage": settings["stage"],
+        "experiment_name": settings["experiment_name"],
+        "objective": settings["objective"],
+        "paired_ranking_weight": settings["paired_ranking_weight"],
         "status": status,
         "scorer_version": SCORER_VERSION,
         "epochs_completed": epochs_completed,
@@ -1037,11 +1358,17 @@ def run_full_training(
 
 
 __all__: Sequence[str] = (
+    "BASELINE_OBJECTIVE",
+    "PAIRED_RANKING_OBJECTIVE",
+    "PairedFamilyBatchSampler",
     "build_optimizer",
     "build_full_training_loaders",
+    "build_paired_training_loaders",
     "build_tiny_overfit_loader",
     "create_grad_scaler",
     "evaluate_binary_loss",
+    "paired_batch_logit_margins",
+    "paired_logistic_ranking_loss",
     "resolve_device",
     "run_full_training",
     "run_tiny_overfit",

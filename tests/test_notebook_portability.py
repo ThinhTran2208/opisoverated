@@ -61,6 +61,32 @@ class NotebookPortabilityTests(unittest.TestCase):
         self.assertIn("repo_root=REPO_ROOT", code)
         self.assertIn("BLOCKED", code)
 
+    def test_nb5_exposes_separate_amp_control_and_paired_experiment(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        notebook = json.loads(
+            (
+                repo_root
+                / "notebooks/experiments/NB5_type_aware_pairwise_v1.ipynb"
+            ).read_text(encoding="utf-8")
+        )
+        code = "\n".join(
+            "".join(cell.get("source", []))
+            for cell in notebook["cells"]
+            if cell.get("cell_type") == "code"
+        )
+
+        self.assertIn(
+            "scorer_type_aware_pairwise_v1_amp_off_control.yaml", code
+        )
+        self.assertIn(
+            "scorer_type_aware_pairwise_v1_paired_ranking_v1.yaml", code
+        )
+        self.assertIn("build_paired_training_loaders", code)
+        self.assertIn("RUN_S3_AMP_OFF_CONTROL = False", code)
+        self.assertIn("RUN_S3_1_PAIRED = False", code)
+        self.assertIn('metrics["mean_logit_margin"]', code)
+        self.assertIn('metrics["median_logit_margin"]', code)
+
 
 if __name__ == "__main__":
     unittest.main()

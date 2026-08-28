@@ -546,6 +546,47 @@ Không sigmoid trước `BCEWithLogitsLoss`.
 
 Không thêm ranking loss ở baseline V1. Chỉ cân nhắc `BCE + paired ranking loss` ở experiment sau nếu FITB / margin analysis cho thấy cần thiết.
 
+### 11.1.1 S3.1 experimental extension — paired ranking V1
+
+S3 baseline trên Frozen Data V2 đã hoàn thành và cho thấy FITB/margin còn yếu,
+vì vậy điều kiện mở experiment sau baseline đã thỏa mãn. S3.1 không thay đổi
+Data V2, model forward hoặc canonical S3 baseline config.
+
+Config riêng:
+
+```text
+configs/scorer_type_aware_pairwise_v1_paired_ranking_v1.yaml
+```
+
+Train loader phải shuffle theo **family**, trong đó mỗi family luôn gồm đúng:
+
+```text
+1 positive + 1 paired negative
+```
+
+Không được dựa vào row adjacency để recover family; phải dùng
+`sample_id` và `paired_positive_sample_id`.
+
+Với paired margin:
+
+```text
+m_i = positive_logit_i - negative_logit_i
+```
+
+S3.1 dùng paired logistic ranking loss:
+
+```text
+ranking_loss = mean(softplus(-m_i))
+total_loss = BCEWithLogitsLoss + 0.5 * ranking_loss
+```
+
+Checkpoint vẫn được chọn bằng validation ROC-AUC. FITB, mean margin và median
+margin vẫn là guardrail/diagnostics. Validation loss tiếp tục là BCE để có thể
+so sánh trực tiếp với baseline.
+
+S3.1 là experiment độc lập: output directory, config và checkpoint không được
+ghi đè S3 baseline. Chỉ chạy seed 43/44 sau khi seed 42 cho kết quả `KEEP`.
+
 ## 11.2 Optimizer
 
 Baseline:
@@ -727,6 +768,11 @@ Evaluator output tối thiểu:
 ```
 
 Evaluator phải hard-fail nếu paired positive/negative relationship không recover đầy đủ.
+
+`PROJECT_METRICS_VI.md` liệt kê F1 là secondary metric cấp project, nhưng S3
+chưa có threshold-selection protocol nên evaluator V1 chưa báo F1. Không được
+ngầm dùng logit `0` hoặc tự chọn threshold trên test. F1 chỉ được mở sau khi
+threshold được chọn trên validation và được ghi vào versioned evaluation config.
 
 ---
 
@@ -1069,7 +1115,9 @@ docs/
 └── SCORER_CONTRACT_V1.md
 
 configs/
-└── scorer_type_aware_pairwise_v1.yaml
+├── scorer_type_aware_pairwise_v1.yaml
+├── scorer_type_aware_pairwise_v1_amp_off_control.yaml
+└── scorer_type_aware_pairwise_v1_paired_ranking_v1.yaml
 
 src/scorer/
 ├── __init__.py
@@ -1248,6 +1296,9 @@ large hyperparameter search
 ```
 
 Các thay đổi trên phải là experiment/stage sau khi baseline `type_aware_pairwise_v1` đã ổn định.
+
+`ranking loss` đã được mở dưới tên S3.1 sau khi S3 baseline hoàn thành. Nó vẫn
+là experiment, chưa tự động trở thành canonical scorer chỉ vì code đã tồn tại.
 
 ---
 

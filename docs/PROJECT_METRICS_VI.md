@@ -128,6 +128,10 @@ Metric này dùng để kiểm tra scorer có bị lệch quá nhiều về dự
 
 Tuy nhiên, F1 phụ thuộc vào threshold được chọn, nên không dùng làm metric chính để chọn model.
 
+Ở S3/S3.1, F1 chưa được xuất vì threshold protocol chưa được khóa. Chỉ thêm F1
+sau khi threshold được chọn trên validation và được lưu theo version; tuyệt đối
+không chọn threshold bằng test split.
+
 ---
 
 ## 2. Recommendation
