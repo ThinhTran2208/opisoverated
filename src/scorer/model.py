@@ -120,24 +120,16 @@ class TypeAwarePairwiseScorer(_ModuleBase):
         self.min_items = int(min_items)
         self.max_items = int(max_items)
 
+        # Keep PyTorch's normal module-construction RNG order intact first.
+        # We deliberately rescale the category embedding only after every MLP
+        # has been constructed. This preserves the downstream Linear
+        # initialization that produced the strongest FP32 diagnostic run,
+        # while still fixing the category-vs-FashionCLIP feature-scale issue.
         self.category_embedding = nn.Embedding(
             num_embeddings=self.category_vocab_size,
             embedding_dim=self.category_embedding_dim,
             padding_idx=self.category_padding_idx,
         )
-        # FashionCLIP inputs are frozen L2-normalized vectors (norm ~= 1).  The
-        # default nn.Embedding initialization gives 32-d category vectors norm
-        # ~= sqrt(32), which experimentally overwhelmed the FashionCLIP signal
-        # and collapsed full-data training.  Initialize each learned category
-        # vector with expected squared norm ~= 1 instead.
-        self.category_embedding_init_std = self.category_embedding_dim ** -0.5
-        nn.init.normal_(
-            self.category_embedding.weight,
-            mean=0.0,
-            std=self.category_embedding_init_std,
-        )
-        with torch.no_grad():
-            self.category_embedding.weight[self.category_padding_idx].zero_()
 
         self.item_mlp = nn.Sequential(
             nn.Linear(
@@ -165,6 +157,22 @@ class TypeAwarePairwiseScorer(_ModuleBase):
             nn.ReLU(),
             nn.Linear(self.output_hidden_dim, 1),
         )
+
+        # FashionCLIP inputs are frozen L2-normalized vectors (norm ~= 1).
+        # The default 32-d nn.Embedding vectors have norm ~= sqrt(32), which
+        # experimentally overwhelmed the FashionCLIP signal.  Rescale only
+        # the category table, after downstream module initialization, so the
+        # category vectors also start with expected squared norm ~= 1 without
+        # perturbing the MLP initialization RNG trajectory.
+        self.category_embedding_init_policy = "post_mlp_scale_preserving"
+        self.category_embedding_init_std = self.category_embedding_dim ** -0.5
+        nn.init.normal_(
+            self.category_embedding.weight,
+            mean=0.0,
+            std=self.category_embedding_init_std,
+        )
+        with torch.no_grad():
+            self.category_embedding.weight[self.category_padding_idx].zero_()
 
     @classmethod
     def from_config(cls, config: Mapping[str, object]) -> "TypeAwarePairwiseScorer":
