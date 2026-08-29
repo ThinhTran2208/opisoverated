@@ -10,10 +10,22 @@ from src.detection.config import (
     EXPECTED_EMBEDDING_DIM,
     load_detection_config,
 )
-from src.detection.fashionclip import select_core7_prediction
+from src.detection.fashionclip import _extract_feature_tensor, select_core7_prediction
 from src.detection.pipeline import build_scorer_batch_lists, expand_and_clamp_xyxy
 from src.detection.rfdetr import DEFAULT_CORE7_DETECTOR_LABELS, build_detection_candidates
 from src.detection.schema import CategoryPrediction, DetectedGarment, DetectionCandidate, DetectionResult
+
+
+class _FakeTensor:
+    shape = (2, 512)
+
+    def float(self):
+        return self
+
+
+class _FakeV5FeatureOutput:
+    def __init__(self, pooler_output):
+        self.pooler_output = pooler_output
 
 
 class DetectionCore7Tests(unittest.TestCase):
@@ -84,6 +96,28 @@ class DetectionCore7Tests(unittest.TestCase):
         decision = select_core7_prediction(scores, min_margin=0.02)
         self.assertFalse(decision.accepted)
         self.assertEqual(decision.rejection_reason, "category_margin_below_threshold")
+
+    def test_transformers_v4_feature_tensor_is_used_directly(self):
+        tensor = _FakeTensor()
+        self.assertIs(
+            _extract_feature_tensor(tensor, feature_name="image features"),
+            tensor,
+        )
+
+    def test_transformers_v5_feature_output_uses_projected_pooler_output(self):
+        tensor = _FakeTensor()
+        output = _FakeV5FeatureOutput(tensor)
+        self.assertIs(
+            _extract_feature_tensor(output, feature_name="text features"),
+            tensor,
+        )
+
+    def test_transformers_v5_feature_output_rejects_missing_pooler_output(self):
+        with self.assertRaisesRegex(ValueError, "pooler_output=None"):
+            _extract_feature_tensor(
+                _FakeV5FeatureOutput(None),
+                feature_name="text features",
+            )
 
     def test_crop_padding_is_clamped_to_image(self):
         crop = expand_and_clamp_xyxy(
