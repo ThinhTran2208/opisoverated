@@ -1,4 +1,4 @@
-"""Unit tests for grounded VLM evidence, prompting, and output validation."""
+"""Unit tests for grounded VLM evidence, constrained analysis, and rendering."""
 
 import copy
 import json
@@ -9,53 +9,85 @@ from src.vlm.config import CANONICAL_MODEL_ID, load_vlm_config, validate_vlm_con
 from src.vlm.pipeline import (
     VLMExplanationPipeline,
     extract_json_object,
-    validate_explanation,
+    render_explanation_vi,
+    validate_visual_analysis,
 )
-from src.vlm.prompt import REQUIRED_LIMITATIONS, build_qwen_messages
+from src.vlm.prompt import (
+    BASE_REQUIRED_LIMITATIONS,
+    TWO_ITEM_EXTRAPOLATION_LIMITATION,
+    build_qwen_messages,
+    required_limitations,
+)
 from src.vlm.schema import build_vlm_evidence, validate_vlm_evidence
 
 
-def loo_fixture():
+def loo_fixture(*, extrapolation=False):
+    without_logits = [-0.3, 0.2, -0.35]
+    deltas = [0.1, 0.6, 0.05]
+    if not extrapolation:
+        without_logits.append(-0.5)
+        deltas.append(-0.1)
     return {
         "protocol_version": "loo-diagnostic-v1",
-        "original_item_count": 4,
+        "original_item_count": len(without_logits),
         "full_logit": -0.4,
-        "without_item_logits": [-0.3, 0.2, -0.35, -0.5],
-        "deltas_without_minus_full": [0.1, 0.6, 0.05, -0.1],
-        "ranked_item_indices": [1, 0, 2, 3],
+        "without_item_logits": without_logits,
+        "deltas_without_minus_full": deltas,
+        "ranked_item_indices": [1, 0, 2] + ([] if extrapolation else [3]),
         "problematic_item_index": 1,
         "problematic_item_id": "bottom",
-        "uses_two_item_extrapolation": False,
+        "uses_two_item_extrapolation": extrapolation,
     }
 
 
-def evidence_fixture():
+def evidence_fixture(*, extrapolation=False):
+    item_ids = ["top", "bottom", "shoe"]
+    categories = ["TOP", "BOTTOM", "SHOES"]
+    if not extrapolation:
+        item_ids.append("bag")
+        categories.append("BAG")
     return build_vlm_evidence(
-        loo_fixture(),
+        loo_fixture(extrapolation=extrapolation),
         sample_id="demo_neg",
-        item_ids=["top", "bottom", "shoe", "bag"],
-        coarse_categories=["TOP", "BOTTOM", "SHOES", "BAG"],
+        item_ids=item_ids,
+        coarse_categories=categories,
     )
 
 
-def explanation_fixture(problem_index=1, problem_id="bottom"):
+def analysis_fixture(evidence=None, *, problem_index=1, problem_id="bottom"):
+    evidence = evidence or evidence_fixture()
     return {
-        "schema_version": "vlm-explanation-v1",
+        "schema_version": "vlm-visual-analysis-v1",
         "problematic_item_index": problem_index,
         "problematic_item_id": problem_id,
-        "headline": "Món đồ ở vị trí 1 có ảnh hưởng âm rõ nhất.",
-        "evidence_summary": [
-            "LOO xếp item bottom đứng đầu theo mức tăng logit khi loại bỏ."
-        ],
+        "overall_visual_support": "supports_loo",
         "visual_observations": [
             {
-                "item_indices": [0, 1],
-                "observation": "Hai món có độ tương phản màu sắc dễ nhận thấy.",
+                "item_indices": [problem_index, 0],
+                "dimension": "style_coherence",
+                "effect": "supports_loo",
+                "confidence": "medium",
             }
         ],
-        "explanation": "Kết quả này diễn giải tín hiệu của scorer và LOO.",
-        "uncertainty_note": "Độ chắc chắn của LOO chưa được hiệu chỉnh.",
-        "limitations": list(REQUIRED_LIMITATIONS),
+        "limitations": list(required_limitations(evidence)),
+    }
+
+
+def hidden_recommendation_fixture():
+    """The exact class of payload that passed the old free-text validator."""
+
+    return {
+        "schema_version": "vlm-explanation-v1",
+        "problematic_item_index": 1,
+        "problematic_item_id": "bottom",
+        "headline": "Đôi giày là item kém phù hợp nhất.",
+        "evidence_summary": ["LOO xác định item 1 có ảnh hưởng lớn nhất."],
+        "visual_observations": [],
+        "explanation": (
+            "Bạn nên thay đôi giày này bằng một đôi sneaker trắng tối giản."
+        ),
+        "uncertainty_note": "Đây là đánh giá của model.",
+        "limitations": list(BASE_REQUIRED_LIMITATIONS),
     }
 
 
@@ -123,7 +155,7 @@ class VlmEvidenceTests(unittest.TestCase):
 
 
 class VlmPromptTests(unittest.TestCase):
-    def test_prompt_maps_every_image_to_canonical_item(self):
+    def test_prompt_maps_images_and_requests_no_free_text(self):
         messages = build_qwen_messages(
             evidence_fixture(),
             [f"https://example.com/{index}.jpg" for index in range(4)],
@@ -139,6 +171,7 @@ class VlmPromptTests(unittest.TestCase):
 
         self.assertEqual(len(image_rows), 4)
         self.assertIn("item_index=1, item_id=bottom", prompt_text)
+        self.assertIn("no free-text fields", prompt_text)
         self.assertIn("recommendation_not_implemented", prompt_text)
         self.assertNotIn("swapped_item_index", prompt_text)
 
@@ -152,28 +185,81 @@ class VlmPromptTests(unittest.TestCase):
                 must_exist=False,
             )
 
+    def test_prompt_conditionally_requests_two_item_disclosure(self):
+        evidence = evidence_fixture(extrapolation=True)
+        messages = build_qwen_messages(
+            evidence,
+            [f"https://example.com/{index}.jpg" for index in range(3)],
+            min_pixels=262144,
+            max_pixels=262144,
+            must_exist=False,
+        )
+        prompt_text = json.dumps(messages)
+        self.assertIn(TWO_ITEM_EXTRAPOLATION_LIMITATION, prompt_text)
+
 
 class VlmOutputTests(unittest.TestCase):
     def test_json_extraction_accepts_one_markdown_fence(self):
-        payload = explanation_fixture()
+        payload = analysis_fixture()
         extracted = extract_json_object(
             "```json\n" + json.dumps(payload, ensure_ascii=False) + "\n```"
         )
         self.assertEqual(extracted["problematic_item_id"], "bottom")
 
-    def test_validator_rejects_changed_problematic_item(self):
-        output = explanation_fixture(problem_index=0, problem_id="top")
-        with self.assertRaisesRegex(ValueError, "change problematic_item_index"):
-            validate_explanation(output, evidence_fixture())
+    def test_json_extraction_rejects_recommendation_before_object(self):
+        raw = (
+            "Bạn nên thay bằng sneaker trắng.\n"
+            + json.dumps(analysis_fixture(), ensure_ascii=False)
+        )
+        with self.assertRaisesRegex(ValueError, "text before"):
+            extract_json_object(raw)
 
-    def test_pipeline_repairs_one_invalid_response(self):
+    def test_json_extraction_rejects_duplicate_keys_hiding_free_text(self):
+        raw = (
+            '{"schema_version":"vlm-visual-analysis-v1",'
+            '"schema_version":"Bạn nên thay bằng sneaker trắng"}'
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate JSON key"):
+            extract_json_object(raw)
+
+    def test_validator_rejects_changed_problematic_item(self):
+        output = analysis_fixture(problem_index=0, problem_id="top")
+        with self.assertRaisesRegex(ValueError, "change problematic_item_index"):
+            validate_visual_analysis(output, evidence_fixture())
+
+    def test_validator_rejects_boolean_problematic_item_index(self):
+        output = analysis_fixture(problem_index=True, problem_id="bottom")
+        with self.assertRaisesRegex(ValueError, "change problematic_item_index"):
+            validate_visual_analysis(output, evidence_fixture())
+
+    def test_validator_rejects_hidden_recommendation_in_old_free_text_schema(self):
+        with self.assertRaisesRegex(ValueError, "keys must be exactly"):
+            validate_visual_analysis(
+                hidden_recommendation_fixture(), evidence_fixture()
+            )
+
+    def test_validator_rejects_natural_language_inside_enum_field(self):
+        output = analysis_fixture()
+        output["visual_observations"][0]["dimension"] = (
+            "Bạn nên thay bằng sneaker trắng"
+        )
+        with self.assertRaisesRegex(ValueError, "dimension must be one of"):
+            validate_visual_analysis(output, evidence_fixture())
+
+    def test_empty_observations_must_be_visually_ambiguous(self):
+        output = analysis_fixture()
+        output["visual_observations"] = []
+        with self.assertRaisesRegex(ValueError, "must be ambiguous"):
+            validate_visual_analysis(output, evidence_fixture())
+
+    def test_pipeline_repairs_one_invalid_response_and_renders_text(self):
         class FakeBackend:
             model_id = CANONICAL_MODEL_ID
 
             def __init__(self):
                 self.responses = [
-                    json.dumps(explanation_fixture(0, "top"), ensure_ascii=False),
-                    json.dumps(explanation_fixture(), ensure_ascii=False),
+                    json.dumps(hidden_recommendation_fixture(), ensure_ascii=False),
+                    json.dumps(analysis_fixture(), ensure_ascii=False),
                 ]
                 self.call_count = 0
 
@@ -196,14 +282,47 @@ class VlmOutputTests(unittest.TestCase):
         )
 
         self.assertEqual(backend.call_count, 2)
+        self.assertEqual(result["generation_attempts"], 2)
+        self.assertEqual(result["visual_analysis"]["problematic_item_id"], "bottom")
         self.assertEqual(result["explanation"]["problematic_item_id"], "bottom")
+        self.assertNotIn("sneaker", json.dumps(result["explanation"]))
         self.assertEqual(len(result["evidence_sha256"]), 64)
 
-    def test_validator_requires_all_limitations(self):
-        output = copy.deepcopy(explanation_fixture())
-        output["limitations"].remove("recommendation_not_implemented")
-        with self.assertRaisesRegex(ValueError, "required limitations"):
-            validate_explanation(output, evidence_fixture())
+    def test_two_item_case_requires_machine_readable_disclosure(self):
+        evidence = evidence_fixture(extrapolation=True)
+        output = analysis_fixture(evidence)
+        output["limitations"].remove(TWO_ITEM_EXTRAPOLATION_LIMITATION)
+        with self.assertRaisesRegex(ValueError, "exactly match"):
+            validate_visual_analysis(output, evidence)
+
+    def test_non_extrapolation_case_rejects_false_disclosure(self):
+        evidence = evidence_fixture(extrapolation=False)
+        output = analysis_fixture(evidence)
+        output["limitations"].append(TWO_ITEM_EXTRAPOLATION_LIMITATION)
+        with self.assertRaisesRegex(ValueError, "exactly match"):
+            validate_visual_analysis(output, evidence)
+
+    def test_renderer_explicitly_discloses_two_item_extrapolation(self):
+        evidence = evidence_fixture(extrapolation=True)
+        explanation = render_explanation_vi(analysis_fixture(evidence), evidence)
+
+        self.assertIn(
+            TWO_ITEM_EXTRAPOLATION_LIMITATION, explanation["limitations"]
+        )
+        self.assertIn("subset còn 2 item", explanation["uncertainty_note"])
+        self.assertIn("ngoài phân phối huấn luyện", explanation["uncertainty_note"])
+
+    def test_renderer_uses_only_validated_analysis_not_model_prose(self):
+        evidence = evidence_fixture()
+        analysis = analysis_fixture(evidence)
+        explanation = render_explanation_vi(analysis, evidence)
+
+        self.assertEqual(explanation["schema_version"], "vlm-explanation-v1")
+        self.assertIn("LOO xếp item 1", explanation["headline"])
+        self.assertIn("taxonomy đóng", explanation["explanation"])
+        self.assertNotIn(
+            TWO_ITEM_EXTRAPOLATION_LIMITATION, explanation["limitations"]
+        )
 
 
 class VlmConfigTests(unittest.TestCase):

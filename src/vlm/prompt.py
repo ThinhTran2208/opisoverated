@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Grounded Qwen3-VL messages for compatibility explanations."""
+"""Constrained Qwen3-VL messages for grounded visual analysis."""
 
 from __future__ import annotations
 
@@ -11,36 +11,67 @@ from urllib.parse import urlparse
 from .schema import EVIDENCE_SCHEMA_VERSION, validate_vlm_evidence
 
 
+VISUAL_ANALYSIS_SCHEMA_VERSION = "vlm-visual-analysis-v1"
 EXPLANATION_SCHEMA_VERSION = "vlm-explanation-v1"
-REQUIRED_LIMITATIONS = (
+
+BASE_REQUIRED_LIMITATIONS = (
     "recommendation_not_implemented",
     "compatibility_logit_is_not_probability",
     "vlm_visual_observations_are_inferences",
 )
+TWO_ITEM_EXTRAPOLATION_LIMITATION = "loo_uses_two_item_extrapolation"
 
-SYSTEM_PROMPT = """You are the grounded explanation layer of a fashion-compatibility system.
+VISUAL_DIMENSIONS = (
+    "color_harmony",
+    "pattern_coherence",
+    "silhouette_balance",
+    "formality_alignment",
+    "style_coherence",
+)
+VISUAL_EFFECTS = (
+    "supports_loo",
+    "ambiguous",
+    "contradicts_loo",
+)
+VISUAL_CONFIDENCE_LEVELS = ("low", "medium", "high")
+OVERALL_VISUAL_SUPPORT_LEVELS = (
+    "supports_loo",
+    "ambiguous",
+    "contradicts_loo",
+)
+
+SYSTEM_PROMPT = """You are the constrained visual-analysis layer of a
+fashion-compatibility system.
 
 The frozen scorer and Leave-One-Out (LOO) module have already made the numerical
-decision. You must explain that evidence; you must not replace, override, or
-recalculate it.
+decision. You may only classify visible relations using the closed taxonomy in
+the requested JSON. Application code, not you, will render the final Vietnamese
+explanation.
 
 Hard rules:
-1. The evidence field diagnosis.problematic_item_index is authoritative. Copy
-   that index and its item_id exactly into your output even if your visual
-   impression differs.
-2. Treat compatibility_logit and LOO deltas as model outputs, not probabilities,
-   percentages, beauty scores, or objective fashion truth.
-3. Put image-derived statements only in visual_observations. Mention only
-   directly visible color, silhouette, pattern, formality, or style relations.
-   Do not invent brand, material, price, occasion, user intent, or demographics.
-4. Recommendation is not implemented. Do not suggest, rank, or fabricate any
-   replacement item.
-5. If uses_two_item_extrapolation is true, explicitly state that the diagnosis
-   includes an out-of-training-distribution two-item LOO subset.
-6. If visual evidence is weak or ambiguous, say so. LOO certainty is not calibrated.
-7. Return one JSON object only: no Markdown fences and no text outside JSON.
-8. Write every human-facing string in Vietnamese.
+1. Copy diagnosis.problematic_item_index and problematic_item_id exactly. Never
+   choose a different problematic item.
+2. Return no natural-language prose. Every string other than the copied item_id
+   must be one of the explicitly allowed enum tokens or schema tokens.
+3. Do not suggest, describe, rank, or fabricate any replacement item.
+4. Use only visible color, pattern, silhouette, formality, and style relations.
+   Do not infer brand, material, price, occasion, user intent, or demographics.
+5. Treat scorer logits and LOO deltas as uncalibrated model outputs, never as
+   probabilities, percentages, or objective fashion truth.
+6. Copy the exact required limitations list, including the conditional
+   loo_uses_two_item_extrapolation token when it is present in the requested shape.
+7. Return exactly one JSON object with no Markdown fence and no extra keys.
 """
+
+
+def required_limitations(evidence: Mapping[str, object]) -> tuple[str, ...]:
+    """Return the exact machine-readable disclosures required for one case."""
+
+    normalized = validate_vlm_evidence(evidence)
+    limitations = list(BASE_REQUIRED_LIMITATIONS)
+    if normalized["diagnosis"]["uses_two_item_extrapolation"]:
+        limitations.append(TWO_ITEM_EXTRAPOLATION_LIMITATION)
+    return tuple(limitations)
 
 
 def _normalize_image_ref(value: object, *, must_exist: bool) -> str:
@@ -59,24 +90,28 @@ def _normalize_image_ref(value: object, *, must_exist: bool) -> str:
 
 
 def expected_output_shape(evidence: Mapping[str, object]) -> dict:
-    diagnosis = evidence["diagnosis"]
+    """Build an example whose values all belong to the closed output taxonomy."""
+
+    normalized = validate_vlm_evidence(evidence)
+    diagnosis = normalized["diagnosis"]
+    problem_index = int(diagnosis["problematic_item_index"])
+    comparison_index = next(
+        index for index in range(len(normalized["items"])) if index != problem_index
+    )
     return {
-        "schema_version": EXPLANATION_SCHEMA_VERSION,
-        "problematic_item_index": diagnosis["problematic_item_index"],
+        "schema_version": VISUAL_ANALYSIS_SCHEMA_VERSION,
+        "problematic_item_index": problem_index,
         "problematic_item_id": diagnosis["problematic_item_id"],
-        "headline": "Một câu tóm tắt ngắn bằng tiếng Việt",
-        "evidence_summary": [
-            "Một đến bốn câu chỉ diễn giải scorer/LOO evidence"
-        ],
+        "overall_visual_support": "ambiguous",
         "visual_observations": [
             {
-                "item_indices": [diagnosis["problematic_item_index"]],
-                "observation": "Nhận xét chỉ dựa trên chi tiết nhìn thấy",
+                "item_indices": [problem_index, comparison_index],
+                "dimension": "style_coherence",
+                "effect": "ambiguous",
+                "confidence": "low",
             }
         ],
-        "explanation": "Đoạn giải thích ngắn gọn bằng tiếng Việt",
-        "uncertainty_note": "Nêu rõ giới hạn và mức độ mơ hồ của evidence",
-        "limitations": list(REQUIRED_LIMITATIONS),
+        "limitations": list(required_limitations(normalized)),
     }
 
 
@@ -88,11 +123,7 @@ def build_qwen_messages(
     max_pixels: int,
     must_exist: bool = True,
 ) -> list[dict]:
-    """Build ordered image/evidence messages for Qwen3-VL.
-
-    Exactly one image is required for every evidence item. Image order is
-    explicitly labeled so visual claims can be mapped back to canonical IDs.
-    """
+    """Build ordered image/evidence messages for constrained Qwen3-VL output."""
 
     normalized = validate_vlm_evidence(evidence)
     items = normalized["items"]
@@ -137,8 +168,15 @@ def build_qwen_messages(
             "text": (
                 f"The following {EVIDENCE_SCHEMA_VERSION} JSON is authoritative.\n"
                 f"EVIDENCE:\n{prompt_payload}\n\n"
-                "Return JSON with exactly this shape and no extra keys. Replace "
-                f"the instructional strings with grounded Vietnamese text:\n{output_shape}"
+                "Return JSON with exactly the requested shape and no free-text "
+                "fields. You may repeat visual_observations rows or return an "
+                "empty list. Every observation must include the authoritative "
+                "problematic item. Allowed dimension tokens: "
+                f"{list(VISUAL_DIMENSIONS)}. Allowed effect tokens: "
+                f"{list(VISUAL_EFFECTS)}. Allowed confidence tokens: "
+                f"{list(VISUAL_CONFIDENCE_LEVELS)}. Allowed overall tokens: "
+                f"{list(OVERALL_VISUAL_SUPPORT_LEVELS)}.\n"
+                f"REQUESTED SHAPE:\n{output_shape}"
             ),
         }
     )
@@ -164,8 +202,9 @@ def append_repair_request(
                     "type": "text",
                     "text": (
                         "Your previous response failed deterministic validation: "
-                        f"{validation_error}. Return a corrected JSON object only. "
-                        "Keep the authoritative problematic item unchanged."
+                        f"{validation_error}. Return corrected JSON only. Do not "
+                        "emit natural-language strings or change the authoritative "
+                        "problematic item. Use only the enum tokens in the requested shape."
                     ),
                 }
             ],

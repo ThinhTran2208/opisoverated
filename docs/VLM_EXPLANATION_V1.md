@@ -109,25 +109,26 @@ Image order phải trùng canonical item order. VLM được phép nhận xét c
 trực tiếp nhìn thấy như màu, pattern, silhouette và formality. Nó không được
 bịa brand, chất liệu, giá, hoàn cảnh sử dụng hoặc ý định người dùng.
 
-## 5. Output contract
+## 5. Output boundary
 
-Qwen phải trả đúng một JSON object `vlm-explanation-v1`:
+### 5.1. Qwen không sinh prose
+
+Qwen chỉ được trả `vlm-visual-analysis-v1` với taxonomy đóng:
 
 ```json
 {
-  "schema_version": "vlm-explanation-v1",
+  "schema_version": "vlm-visual-analysis-v1",
   "problematic_item_index": 2,
   "problematic_item_id": "...",
-  "headline": "...",
-  "evidence_summary": ["..."],
+  "overall_visual_support": "supports_loo",
   "visual_observations": [
     {
-      "item_indices": [0, 2],
-      "observation": "..."
+      "item_indices": [2, 0],
+      "dimension": "style_coherence",
+      "effect": "supports_loo",
+      "confidence": "medium"
     }
   ],
-  "explanation": "...",
-  "uncertainty_note": "...",
   "limitations": [
     "recommendation_not_implemented",
     "compatibility_logit_is_not_probability",
@@ -136,17 +137,55 @@ Qwen phải trả đúng một JSON object `vlm-explanation-v1`:
 }
 ```
 
+Các giá trị `dimension`, `effect`, `confidence`, `overall_visual_support` và
+`limitations` đều phải thuộc allowlist cố định. Ngoài `problematic_item_id` được
+copy nguyên văn từ evidence, model không có field string tự do.
+
+Vì vậy câu như:
+
+```text
+Bạn nên thay đôi giày này bằng sneaker trắng.
+```
+
+không có vị trí hợp lệ trong schema. Đưa câu đó vào field mới hoặc vào một enum
+sẽ hard-fail. Đây là ranh giới deterministic giữa recommendation và explanation;
+không dựa vào lexical blacklist tiếng Việt.
+
+### 5.2. Code render lời giải thích
+
+Sau khi `validate_visual_analysis(...)` pass, `render_explanation_vi(...)` mới
+tạo `vlm-explanation-v1`. Toàn bộ `headline`, `evidence_summary`,
+`visual_observations`, `explanation` và `uncertainty_note` đến từ template đã
+review trong code, không phải prose do Qwen viết.
+
 Validator hard-fail nếu:
 
-- JSON/schema sai;
+- có text ngoài JSON, duplicate JSON key, schema sai hoặc extra field;
 - problematic ID/index khác LOO evidence;
-- visual observation reference item ngoài outfit;
-- thiếu limitation bắt buộc;
-- xuất hiện recommendation field;
-- output quá dài hoặc sai kiểu dữ liệu.
+- observation không reference problematic item hoặc reference item ngoài outfit;
+- bất kỳ string taxonomy nào nằm ngoài allowlist;
+- limitations không khớp chính xác disclosure bắt buộc.
 
-Pipeline cho phép đúng một schema-repair retry. Nếu retry vẫn sai, case đó fail
-thay vì trả một explanation không kiểm soát.
+Pipeline cho phép đúng một schema-repair retry. Nếu retry vẫn sai, case đó fail.
+
+### 5.3. Disclosure cho two-item extrapolation
+
+Nếu evidence có:
+
+```text
+uses_two_item_extrapolation = true
+```
+
+thì output Qwen bắt buộc chứa thêm:
+
+```text
+loo_uses_two_item_extrapolation
+```
+
+trong `limitations`. Thiếu token sẽ hard-fail. Renderer đồng thời bắt buộc ghi
+rõ trong `uncertainty_note` rằng outfit 3 item tạo subset 2 item nằm ngoài phân
+phối huấn luyện 3–8 item. Với case không extrapolate, thêm token này sai cũng
+hard-fail.
 
 ## 6. Chạy trên Colab
 
@@ -167,12 +206,35 @@ Notebook thực hiện:
 7. chạy LOO mà không đưa ground truth vào evidence;
 8. lấy đúng item images từ split `valid` của Polyvore1000;
 9. chạy Qwen3-VL-4B-Instruct;
-10. validate và lưu `evidence.json` + `vlm_run.json` vào Drive.
+10. validate, render bằng template và lưu `evidence.json` + `vlm_run.json`;
+11. ghi `real_qwen_smoke_report.json` và chỉ báo PASS sau inference thật.
 
 Không load test split. Demo mặc định tránh original-size-3 để không dùng two-item
 extrapolation, nhưng contract vẫn bắt buộc disclosure nếu caller dùng case đó.
 
-## 7. API
+## 7. Real-Qwen merge gate
+
+Unit test và fake backend không đủ để merge. PR chỉ được ready khi NB8 đã chạy
+trên GPU với `Qwen3VLBackend` thật và cell cuối in:
+
+```text
+[MERGE GATE] REAL QWEN SMOKE: PASS
+```
+
+Artifact bắt buộc:
+
+```text
+ML_Final/vlm_runs/qwen3_vl_4b_instruct_v1/<sample_id>/
+├── evidence.json
+├── vlm_run.json
+└── real_qwen_smoke_report.json
+```
+
+Người review cần kiểm tra model ID, Git HEAD, CUDA device, package versions,
+schema versions, generation attempts, evidence hash và xác nhận test split không
+được load. Không commit hoặc tuyên bố PASS trước khi real-model run hoàn tất.
+
+## 8. API
 
 ```python
 from src.vlm import build_vlm_evidence, load_vlm_config, VLMExplanationPipeline
@@ -199,7 +261,7 @@ python -m src.vlm.cli \
   --output vlm_run.json
 ```
 
-## 8. Handoff contract
+## 9. Handoff contract
 
 Khi detection hoàn thành, nó chỉ cần cung cấp một image/crop theo đúng item order
 và giữ mapping `item_index → item_id → category`. VLM module không phụ thuộc

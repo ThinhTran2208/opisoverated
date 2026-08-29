@@ -260,9 +260,11 @@ VLM nhận structured evidence từ pipeline, ví dụ:
 Sau đó VLM chuyển evidence thành lời giải thích tự nhiên cho người dùng.
 
 VLM V1 dùng `Qwen/Qwen3-VL-4B-Instruct` theo contract tại
-`docs/VLM_EXPLANATION_V1.md`. Output phải qua deterministic schema validation;
-problematic item do LOO chọn là authoritative. Nếu recommendation chưa có,
-evidence phải ghi `status = not_implemented`.
+`docs/VLM_EXPLANATION_V1.md`. Qwen chỉ xuất visual-analysis enum theo taxonomy
+đóng; code mới render phần tiếng Việt bằng template đã review. Vì không nhận
+free-text từ Qwen, validator có thể hard-fail mọi attempt chèn replacement
+suggestion. Problematic item do LOO chọn là authoritative và recommendation
+luôn giữ `status = not_implemented`.
 
 Mục tiêu là giữ:
 
