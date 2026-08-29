@@ -26,7 +26,7 @@ CATEGORY_MAPPING_VERSION = "core7-v2"
 ITEM_METADATA_VERSION = "core7-item-metadata-v1"
 EMBEDDING_VERSION = "fashionclip-512-l2-v1"
 EMBEDDING_DIM = 512
-MIN_ITEMS = 3
+MIN_ITEMS = 2
 MAX_ITEMS = 8
 SPLITS = ("train", "valid", "test")
 
