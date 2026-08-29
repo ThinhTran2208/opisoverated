@@ -29,6 +29,7 @@ PIPELINE_VERSION = "outfit-production-inference-v1"
 MIN_ITEMS = 3
 MAX_ITEMS = 8
 EMBEDDING_DIM = 512
+EMBEDDING_NORM_TOLERANCE = 1e-3
 CATEGORY_MIN_ID = 1
 CATEGORY_MAX_ID = 7
 
@@ -36,7 +37,13 @@ CATEGORY_MAX_ID = 7
 class InferenceInputError(ValueError):
     """Expected user/runtime input error with a stable machine-readable code."""
 
-    def __init__(self, code: str, message: str, *, details: Mapping[str, object] | None = None):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = str(code)
         self.message = str(message)
@@ -55,7 +62,9 @@ def _require_torch() -> None:
         raise RuntimeError("PyTorch is required for production scorer inference")
 
 
-def _clean_item_for_output(item: Mapping[str, object], index: int) -> dict[str, object]:
+def _clean_item_for_output(
+    item: Mapping[str, object], index: int
+) -> dict[str, object]:
     output: dict[str, object] = {
         "item_index": index,
         "item_id": str(item.get("item_id", f"item-{index}")),
@@ -98,7 +107,8 @@ class ProductionInferencePipeline:
 
         if self.pipeline_version != PIPELINE_VERSION:
             raise ValueError(
-                f"Expected pipeline_version={PIPELINE_VERSION!r}, got {self.pipeline_version!r}"
+                f"Expected pipeline_version={PIPELINE_VERSION!r}, "
+                f"got {self.pipeline_version!r}"
             )
         scorer_version = str(getattr(scorer, "scorer_version", ""))
         if not scorer_version:
@@ -138,8 +148,11 @@ class ProductionInferencePipeline:
         if not isinstance(manifest, Mapping):
             raise ValueError("production inference manifest must be a JSON object")
 
-        root = Path(repo_root) if repo_root is not None else manifest_source.parent.parent
-        root = root.resolve()
+        root = (
+            Path(repo_root)
+            if repo_root is not None
+            else manifest_source.parent.parent
+        ).resolve()
         if manifest.get("pipeline_version") != PIPELINE_VERSION:
             raise ValueError("Unsupported pipeline_version in production manifest")
 
@@ -175,21 +188,32 @@ class ProductionInferencePipeline:
             explanation_provider=explanation_provider,
         )
 
-    def _validate_and_stack_items(self, items: Sequence[Mapping[str, object]]):
+    def _validate_and_stack_items(
+        self, items: Sequence[Mapping[str, object]]
+    ):
         if isinstance(items, (str, bytes)) or not isinstance(items, Sequence):
-            raise InferenceInputError("invalid_items", "items must be a sequence of garment records")
+            raise InferenceInputError(
+                "invalid_items", "items must be a sequence of garment records"
+            )
         item_count = len(items)
         if item_count < MIN_ITEMS:
             raise InferenceInputError(
                 "insufficient_garments",
                 f"At least {MIN_ITEMS} garments are required",
-                details={"detected_count": item_count, "minimum_required": MIN_ITEMS},
+                details={
+                    "detected_count": item_count,
+                    "minimum_required": MIN_ITEMS,
+                },
             )
         if item_count > MAX_ITEMS:
             raise InferenceInputError(
                 "too_many_garments",
-                f"At most {MAX_ITEMS} garments are supported; input is never silently truncated",
-                details={"detected_count": item_count, "maximum_supported": MAX_ITEMS},
+                f"At most {MAX_ITEMS} garments are supported; "
+                "input is never silently truncated",
+                details={
+                    "detected_count": item_count,
+                    "maximum_supported": MAX_ITEMS,
+                },
             )
 
         tensors = []
@@ -199,15 +223,21 @@ class ProductionInferencePipeline:
         for index, raw_item in enumerate(items):
             if not isinstance(raw_item, Mapping):
                 raise InferenceInputError(
-                    "invalid_item", f"items[{index}] must be a mapping", details={"item_index": index}
+                    "invalid_item",
+                    f"items[{index}] must be a mapping",
+                    details={"item_index": index},
                 )
             if "embedding" not in raw_item:
                 raise InferenceInputError(
-                    "missing_embedding", f"items[{index}] is missing embedding", details={"item_index": index}
+                    "missing_embedding",
+                    f"items[{index}] is missing embedding",
+                    details={"item_index": index},
                 )
             if "coarse_category_id" not in raw_item:
                 raise InferenceInputError(
-                    "missing_category", f"items[{index}] is missing coarse_category_id", details={"item_index": index}
+                    "missing_category",
+                    f"items[{index}] is missing coarse_category_id",
+                    details={"item_index": index},
                 )
 
             vector = torch.as_tensor(raw_item["embedding"], dtype=torch.float32)
@@ -219,23 +249,45 @@ class ProductionInferencePipeline:
                 )
             if not torch.isfinite(vector).all():
                 raise InferenceInputError(
-                    "non_finite_embedding", f"items[{index}] embedding contains NaN/Inf", details={"item_index": index}
+                    "non_finite_embedding",
+                    f"items[{index}] embedding contains NaN/Inf",
+                    details={"item_index": index},
+                )
+            embedding_norm = float(torch.linalg.vector_norm(vector))
+            if abs(embedding_norm - 1.0) > EMBEDDING_NORM_TOLERANCE:
+                raise InferenceInputError(
+                    "embedding_not_l2_normalized",
+                    f"items[{index}] embedding must be L2-normalized",
+                    details={
+                        "item_index": index,
+                        "embedding_norm": embedding_norm,
+                        "expected_norm": 1.0,
+                        "tolerance": EMBEDDING_NORM_TOLERANCE,
+                    },
                 )
 
             raw_category_id = raw_item["coarse_category_id"]
             if isinstance(raw_category_id, bool):
-                raise InferenceInputError("invalid_category", f"items[{index}] has invalid coarse_category_id")
+                raise InferenceInputError(
+                    "invalid_category",
+                    f"items[{index}] has invalid coarse_category_id",
+                )
             try:
                 category_id = int(raw_category_id)
             except (TypeError, ValueError) as error:
                 raise InferenceInputError(
-                    "invalid_category", f"items[{index}] has invalid coarse_category_id"
+                    "invalid_category",
+                    f"items[{index}] has invalid coarse_category_id",
                 ) from error
             if not CATEGORY_MIN_ID <= category_id <= CATEGORY_MAX_ID:
                 raise InferenceInputError(
                     "invalid_category",
-                    f"items[{index}] coarse_category_id must be in [{CATEGORY_MIN_ID}, {CATEGORY_MAX_ID}]",
-                    details={"item_index": index, "coarse_category_id": category_id},
+                    f"items[{index}] coarse_category_id must be in "
+                    f"[{CATEGORY_MIN_ID}, {CATEGORY_MAX_ID}]",
+                    details={
+                        "item_index": index,
+                        "coarse_category_id": category_id,
+                    },
                 )
 
             item_id = str(raw_item.get("item_id", f"item-{index}"))
@@ -245,16 +297,22 @@ class ProductionInferencePipeline:
             normalized_items.append(_clean_item_for_output(raw_item, index))
 
         if len(set(item_ids)) != len(item_ids):
-            raise InferenceInputError("duplicate_item_id", "item_id values must be unique within an outfit")
+            raise InferenceInputError(
+                "duplicate_item_id", "item_id values must be unique within an outfit"
+            )
 
         embeddings = torch.stack(tensors, dim=0)
         categories = torch.tensor(category_ids, dtype=torch.long)
         return embeddings, categories, item_ids, normalized_items
 
-    def analyze_precomputed(self, items: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    def analyze_precomputed(
+        self, items: Sequence[Mapping[str, object]]
+    ) -> dict[str, object]:
         """Run scorer -> calibration -> LOO over precomputed garment inputs."""
 
-        embeddings, categories, item_ids, normalized_items = self._validate_and_stack_items(items)
+        embeddings, categories, item_ids, normalized_items = (
+            self._validate_and_stack_items(items)
+        )
         try:
             device = next(self.scorer.parameters()).device
         except StopIteration:
@@ -271,9 +329,15 @@ class ProductionInferencePipeline:
                 coarse_category_ids=model_categories,
                 item_mask=item_mask,
             )
-        logit_tensor = output.get("compatibility_logit") if isinstance(output, Mapping) else None
+        logit_tensor = (
+            output.get("compatibility_logit")
+            if isinstance(output, Mapping)
+            else None
+        )
         if not isinstance(logit_tensor, torch.Tensor) or logit_tensor.shape != (1,):
-            raise RuntimeError("Scorer violated compatibility_logit [B] output contract")
+            raise RuntimeError(
+                "Scorer violated compatibility_logit [B] output contract"
+            )
         compatibility_logit = float(logit_tensor.detach().cpu()[0])
         if not math.isfinite(compatibility_logit):
             raise RuntimeError("Scorer returned non-finite compatibility_logit")
@@ -290,7 +354,9 @@ class ProductionInferencePipeline:
             "items": normalized_items,
             "compatibility": {
                 "compatibility_logit": compatibility_logit,
-                "compatibility_score": self.calibrator.compatibility_score(compatibility_logit),
+                "compatibility_score": self.calibrator.compatibility_score(
+                    compatibility_logit
+                ),
                 "scorer_version": str(self.scorer.scorer_version),
                 "calibration_version": str(self.calibrator.calibration_version),
             },
@@ -299,8 +365,12 @@ class ProductionInferencePipeline:
                 "problematic_item_index": diagnosis["problematic_item_index"],
                 "problematic_item_id": diagnosis["problematic_item_id"],
                 "ranked_item_indices": diagnosis["ranked_item_indices"],
-                "deltas_without_minus_full": diagnosis["deltas_without_minus_full"],
-                "uses_two_item_extrapolation": diagnosis["uses_two_item_extrapolation"],
+                "deltas_without_minus_full": diagnosis[
+                    "deltas_without_minus_full"
+                ],
+                "uses_two_item_extrapolation": diagnosis[
+                    "uses_two_item_extrapolation"
+                ],
             },
             "versions": self.versions,
         }
@@ -308,11 +378,17 @@ class ProductionInferencePipeline:
             response["explanation"] = self.explanation_provider.explain(response)
         return response
 
-    def analyze_precomputed_safe(self, items: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    def analyze_precomputed_safe(
+        self, items: Sequence[Mapping[str, object]]
+    ) -> dict[str, object]:
         try:
             return self.analyze_precomputed(items)
         except InferenceInputError as error:
-            return {"status": "error", "error": error.to_dict(), "versions": self.versions}
+            return {
+                "status": "error",
+                "error": error.to_dict(),
+                "versions": self.versions,
+            }
 
     def analyze_image(self, image: object) -> dict[str, object]:
         if self.garment_preprocessor is None:
@@ -327,4 +403,8 @@ class ProductionInferencePipeline:
         try:
             return self.analyze_image(image)
         except InferenceInputError as error:
-            return {"status": "error", "error": error.to_dict(), "versions": self.versions}
+            return {
+                "status": "error",
+                "error": error.to_dict(),
+                "versions": self.versions,
+            }
