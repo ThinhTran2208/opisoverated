@@ -1,0 +1,25 @@
+{
+  "protocol_version": "vlm-explanation-v1",
+  "model": {
+    "id": "Qwen/Qwen3-VL-4B-Instruct",
+    "dtype": "float16",
+    "device_map": "auto",
+    "require_cuda": true
+  },
+  "vision": {
+    "min_pixels": 262144,
+    "max_pixels": 262144,
+    "image_patch_size": 16
+  },
+  "generation": {
+    "max_new_tokens": 512,
+    "do_sample": false,
+    "num_beams": 1,
+    "repetition_penalty": 1.05,
+    "max_validation_retries": 1
+  },
+  "output": {
+    "language": "vi",
+    "include_raw_response": true
+  }
+}
