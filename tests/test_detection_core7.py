@@ -152,7 +152,7 @@ class DetectionCore7Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "supports <= 8"):
             build_scorer_batch_lists(self._fake_result(9), min_items=3, max_items=8)
 
-    def test_detection_notebook_is_portable_and_uses_new_pipeline(self):
+    def test_detection_notebook_is_clean_portable_smoke_test(self):
         notebook_path = (
             self.repo_root
             / "notebooks/experiments/NB9_detection_rfdetr_fashionclip_core7_v1.ipynb"
@@ -163,11 +163,25 @@ class DetectionCore7Tests(unittest.TestCase):
             for cell in notebook["cells"]
             if cell.get("cell_type") == "code"
         )
+        all_text = "\n".join("".join(cell.get("source", [])) for cell in notebook["cells"])
+
         self.assertNotIn("from google.colab import drive", code)
         self.assertNotIn("/content/drive/MyDrive", code)
         self.assertNotIn("GroundingDino", code)
+        self.assertNotIn('"--upgrade"', code)
+        self.assertNotIn("if IMAGE_PATH.is_file()", code)
         self.assertIn("DetectionPipeline", code)
         self.assertIn("load_detection_config", code)
+        self.assertIn("numpy.testing._private.utils", code)
+        self.assertIn("tests/animage.jpg", code)
+        self.assertIn("NB9 SMOKE PASS", all_text)
+
+    def test_detection_requirements_pin_binary_compatibility_ranges(self):
+        requirements = (self.repo_root / "requirements-detection.txt").read_text(encoding="utf-8")
+        self.assertIn("numpy>=1.26,<2.4", requirements)
+        self.assertIn("scipy>=1.11,<1.17", requirements)
+        self.assertIn("transformers>=5.1,<6", requirements)
+        self.assertIn("rfdetr==1.8.3", requirements)
 
     def test_config_rejects_missing_category_prompt(self):
         payload = json.loads(self.config_path.read_text(encoding="utf-8"))
