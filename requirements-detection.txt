@@ -1,12 +1,11 @@
-# Detection runtime. PyTorch CUDA wheels may be provided by the target runtime.
-# RF-DETR 1.8.3 requires transformers>=5.1,<6; keep this range aligned with
-# the detector package so pip can resolve the Colab environment.
-# NumPy 2.4.x currently breaks the SciPy/NumPy import chain used by RF-DETR on
-# Colab (missing numpy._core._multiarray_umath._blas_supports_fpe). Keep the
-# runtime below 2.4 until that upstream compatibility gap is gone.
+# Detection runtime. Prefer the target runtime's existing compatible binary wheels.
+# Keep NumPy/SciPy below ranges that have caused mixed-ABI issues in Colab when
+# pip replaces them underneath an already-running kernel.
 torch>=2.2
 numpy>=1.26,<2.4
+scipy>=1.11,<1.17
 pillow>=10,<12
 huggingface_hub>=0.30,<2
+# RF-DETR 1.8.3 requires transformers>=5.1,<6.
 transformers>=5.1,<6
 rfdetr==1.8.3
