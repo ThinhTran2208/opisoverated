@@ -75,6 +75,31 @@ The notebook:
 - saves a detailed JSON report under
   `ML_Final/diagnosis_runs/loo_diagnostic_v1_v5_seed42/`.
 
+## Validation result
+
+NB7 was executed against git head
+`35122750c8aacb0d7782e6120a56c6755a7431ce` with the canonical V5 checkpoint
+(epoch 52, best validation ROC-AUC `0.6905082489625538`). The notebook completed
+without cell errors; 5/5 LOO tests and 19/19 scorer regression tests passed.
+
+Measured on all 1,142 validation negatives:
+
+- overall Top-1 Localization Accuracy: `0.5350262697`;
+- overall Hit@2: `0.7688266200`;
+- original size 3: Top-1 `0.5921787709`, Hit@2 `0.8659217877`, 358 samples;
+- original size 4+: Top-1 `0.5089285714`, Hit@2 `0.7244897959`, 784 samples.
+
+All 358 original-size-3 rows use the explicit two-item extrapolation path.
+No original-size-4+ row does. Therefore the size-4+ result is the clean
+in-distribution frozen-V5 LOO metric, while size 3 remains experimental
+coverage.
+
+Detailed tables, validation checks, and interpretation are recorded in
+`docs/LOO_DIAGNOSIS_V1_RESULTS.md`. The complete per-sample JSON remains a
+Drive artifact at
+`ML_Final/diagnosis_runs/loo_diagnostic_v1_v5_seed42/validation_loo_report.json`
+rather than being committed to Git.
+
 ## Interpretation
 
 This branch answers whether frozen V5 is useful for LOO without retraining.
