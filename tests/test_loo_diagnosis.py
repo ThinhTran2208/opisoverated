@@ -171,6 +171,11 @@ class LooDiagnosisTests(unittest.TestCase):
         self.assertEqual(report["overall"]["top1_localization_accuracy"], 1.0)
         self.assertEqual(report["overall"]["hit_at_2"], 1.0)
         self.assertEqual(report["overall"]["two_item_extrapolation_count"], 1)
+        self.assertEqual(report["original_size_3_extrapolation"]["sample_count"], 1)
+        self.assertEqual(report["original_size_4_plus"]["sample_count"], 1)
+        self.assertEqual(
+            report["original_size_4_plus"]["two_item_extrapolation_count"], 0
+        )
         self.assertEqual(set(report["by_original_item_count"]), {"3", "4"})
         self.assertEqual(
             report["records"][0]["predicted_problematic_item_index"], 1

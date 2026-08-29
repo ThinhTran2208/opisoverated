@@ -48,6 +48,9 @@ Always report:
 
 - overall LOO Top-1 Localization Accuracy;
 - overall Hit@2;
+- a separate original-size-3 extrapolation summary;
+- a separate original-size-4+ summary whose removed subsets remain canonical
+  3+ item inputs;
 - the same metrics grouped by original outfit size;
 - count of original three-item outfits that required two-item extrapolation.
 
@@ -82,4 +85,3 @@ clean frozen-V5 LOO result and treat size 3 as an experimental coverage result.
 A true canonical two-item solution would require a separately versioned
 model/data change and retraining; changing the existing YAML from 3 to 2 is not
 a valid migration for the current checkpoint.
-

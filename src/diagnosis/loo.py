@@ -355,10 +355,19 @@ def evaluate_loo_localization(
     for row in records:
         by_size_records[int(row["original_item_count"])].append(row)
 
+    size_three_records = [
+        row for row in records if int(row["original_item_count"]) == 3
+    ]
+    size_four_plus_records = [
+        row for row in records if int(row["original_item_count"]) >= 4
+    ]
+
     return {
         "protocol_version": LOO_PROTOCOL_VERSION,
         "split_scope": "negative_samples_only",
         "overall": _summarize_records(records),
+        "original_size_3_extrapolation": _summarize_records(size_three_records),
+        "original_size_4_plus": _summarize_records(size_four_plus_records),
         "by_original_item_count": {
             str(size): _summarize_records(rows)
             for size, rows in sorted(by_size_records.items())
