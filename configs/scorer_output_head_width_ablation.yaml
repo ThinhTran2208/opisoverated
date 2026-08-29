@@ -1,0 +1,18 @@
+# Experiment-only ablation. Canonical V5 on main remains unchanged.
+base_config: configs/scorer_type_aware_pairwise_v1_val_auc.yaml
+
+experiment:
+  name: output_head_width_ablation_v1
+  seed: 42
+  widths:
+    - 32
+    - 64
+    - 128
+  canonical_width: 16
+  primary_metric: roc_auc
+  guardrail_metric: fitb_2way
+  train_each_variant_from_scratch: true
+  copy_canonical_shared_initialization: true
+
+# All other model/data/training settings are inherited from the frozen V5
+# validation-AUC profile. Only model.output_hidden_dim changes per run.
