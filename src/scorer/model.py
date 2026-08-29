@@ -40,6 +40,7 @@ OUTPUT_HIDDEN_DIM = 16
 DROPOUT = 0.2
 MIN_ITEMS = 3
 MAX_ITEMS = 8
+DIAGNOSTIC_MIN_ITEMS = 2
 
 _SUPPORTED_ACTIVATION = "relu"
 _SUPPORTED_AGGREGATION = "mean"
@@ -232,6 +233,8 @@ class TypeAwarePairwiseScorer(_ModuleBase):
         coarse_category_ids,
         item_mask,
         pair_mask,
+        *,
+        effective_min_items: int | None = None,
     ) -> None:
         if not isinstance(item_embeddings, torch.Tensor):
             raise TypeError("item_embeddings must be a torch.Tensor")
@@ -284,12 +287,13 @@ class TypeAwarePairwiseScorer(_ModuleBase):
         ):
             raise ValueError("Padded positions must use category ID 0")
 
+        minimum = self.min_items if effective_min_items is None else effective_min_items
         item_counts = item_mask.sum(dim=1)
-        if torch.any(item_counts < self.min_items) or torch.any(
+        if torch.any(item_counts < minimum) or torch.any(
             item_counts > self.max_items
         ):
             raise ValueError(
-                f"Every outfit must contain [{self.min_items}, {self.max_items}] "
+                f"Every outfit must contain [{minimum}, {self.max_items}] "
                 "real items"
             )
 
@@ -324,19 +328,44 @@ class TypeAwarePairwiseScorer(_ModuleBase):
         coarse_category_ids,
         item_mask,
         pair_mask=None,
+        *,
+        diagnostic_min_items: int | None = None,
     ) -> dict[str, object]:
         """Return ``{\"compatibility_logit\": Tensor[B]}``.
 
         ``pair_mask`` is optional because it is derivable from ``item_mask``.
         When supplied by the S1 collator, it is validated against the canonical
         ``i < j`` real-item pair mask before being consumed.
+
+        ``diagnostic_min_items=2`` is an explicit eval-only escape hatch for
+        downstream Leave-One-Out diagnosis.  It does not change ``self.min_items``,
+        checkpoint metadata, the canonical collator, or any training behavior.
+        In particular, a normal forward call still rejects two-item outfits.
         """
+
+        effective_min_items = self.min_items
+        if diagnostic_min_items is not None:
+            if self.training:
+                raise ValueError(
+                    "diagnostic_min_items is inference-only; call model.eval() first"
+                )
+            if (
+                isinstance(diagnostic_min_items, bool)
+                or diagnostic_min_items != DIAGNOSTIC_MIN_ITEMS
+                or self.min_items != MIN_ITEMS
+            ):
+                raise ValueError(
+                    "Only diagnostic_min_items=2 is supported for a canonical "
+                    "min_items=3 scorer"
+                )
+            effective_min_items = DIAGNOSTIC_MIN_ITEMS
 
         self._validate_inputs(
             item_embeddings,
             coarse_category_ids,
             item_mask,
             pair_mask,
+            effective_min_items=effective_min_items,
         )
 
         expected_pair_mask = self._expected_pair_mask(item_mask)
