@@ -59,6 +59,32 @@ def select_core7_prediction(
     )
 
 
+def _extract_feature_tensor(output: object, *, feature_name: str):
+    """Return the projected feature tensor from Transformers v4 or v5 helpers.
+
+    Transformers v4 ``CLIPModel.get_*_features`` returned a tensor directly.
+    Transformers v5 returns ``BaseModelOutputWithPooling`` and stores the same
+    projected embedding in ``pooler_output``. Supporting both shapes keeps the
+    detection runtime compatible with the RF-DETR-required Transformers v5
+    range without breaking older local environments.
+    """
+
+    if hasattr(output, "pooler_output"):
+        tensor = getattr(output, "pooler_output")
+        if tensor is None:
+            raise ValueError(f"{feature_name} output has pooler_output=None")
+        return tensor
+
+    # Transformers v4 behavior: the helper returned the tensor itself.
+    if hasattr(output, "float") and hasattr(output, "shape"):
+        return output
+
+    raise TypeError(
+        f"Unsupported {feature_name} output type: {type(output).__name__}. "
+        "Expected a tensor or an object with pooler_output."
+    )
+
+
 class FashionCLIPCore7Encoder:
     """Encode garment crops once, then reuse the same 512-d vector for scorer + category."""
 
@@ -115,7 +141,8 @@ class FashionCLIPCore7Encoder:
                     for key, value in inputs.items()
                     if key in {"input_ids", "attention_mask"}
                 }
-                features = model.get_text_features(**text_kwargs)
+                output = model.get_text_features(**text_kwargs)
+                features = _extract_feature_tensor(output, feature_name="text features")
                 features = self._normalize(features.float())
                 prototype = self._normalize(features.mean(dim=0, keepdim=True))[0]
                 category_names.append(category)
@@ -135,7 +162,8 @@ class FashionCLIPCore7Encoder:
         inputs = processor(images=list(crops), return_tensors="pt")
         pixel_values = inputs["pixel_values"].to(self.device)
         with torch.inference_mode():
-            features = model.get_image_features(pixel_values=pixel_values)
+            output = model.get_image_features(pixel_values=pixel_values)
+        features = _extract_feature_tensor(output, feature_name="image features")
         features = self._normalize(features.float())
         if features.ndim != 2 or int(features.shape[1]) != EXPECTED_EMBEDDING_DIM:
             raise ValueError(
