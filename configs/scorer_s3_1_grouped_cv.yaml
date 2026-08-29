@@ -1,0 +1,66 @@
+experiment:
+  name: s3_1_grouped_cv_lambda_seed_confirmation
+  description: choose paired-ranking lambda on TRAIN-only grouped 3-fold CV, then confirm on canonical VALID across seeds
+  cv:
+    n_splits: 3
+    split_seed: 20260829
+    training_seed: 42
+    ranking_weights:
+      - 0.10
+      - 0.50
+      - 1.00
+    selection_metric: mean_roc_auc
+    exact_tie_rule: smaller_lambda
+    grouping: source_kit_id_with_complete_pair_families
+  seed_confirmation:
+    seeds:
+      - 42
+      - 43
+      - 44
+    choose_seed_after_results: false
+  frozen_v5_reference:
+    valid_roc_auc: 0.6905082489625538
+    valid_fitb_2way: 0.7626970227670753
+    loo_4plus_top1: 0.5089285714285714
+    loo_4plus_hit_at_2: 0.7244897959183674
+    loo_4plus_hit_at_3: 0.8635204081632653
+
+model:
+  name: type_aware_pairwise_v1
+  embedding_dim: 512
+  category_count: 7
+  category_vocab_size: 8
+  category_padding_idx: 0
+  category_embedding_dim: 32
+  item_projection_dim: 256
+  item_hidden_dim: 128
+  pair_hidden_dim: 128
+  output_hidden_dim: 16
+  activation: relu
+  dropout: 0.2
+  aggregation: mean
+  pair_symmetry: bidirectional_mean
+
+data:
+  min_items: 3
+  max_items: 8
+
+# Modernized S3.1 training regime. Category init is implemented by current model
+# as post-MLP N(0, 1/sqrt(32)); TEST is never loaded by NB11.
+training:
+  optimizer: adamw
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  batch_size: 256
+  max_epochs: 60
+  early_stopping_patience: 10
+  early_stopping_min_epochs: 30
+  early_stopping_min_delta: 0.0
+  lr_scheduler: none
+  gradient_clipping: none
+  mixed_precision: false
+  seed: 42
+
+selection:
+  primary_metric: roc_auc
+  guardrail_metric: fitb_2way
