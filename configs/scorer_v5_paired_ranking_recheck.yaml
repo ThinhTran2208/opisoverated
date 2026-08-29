@@ -1,0 +1,55 @@
+experiment:
+  name: v5_paired_ranking_recheck
+  description: controlled S3.1 recheck on top of the frozen V5 training regime
+  ranking_weights:
+    - 0.10
+    - 0.25
+  baseline_valid_roc_auc: 0.6905082489625538
+  baseline_valid_fitb_2way: 0.7626970227670753
+
+model:
+  name: type_aware_pairwise_v1
+  embedding_dim: 512
+  category_count: 7
+  category_vocab_size: 8
+  category_padding_idx: 0
+  category_embedding_dim: 32
+  item_projection_dim: 256
+  item_hidden_dim: 128
+  pair_hidden_dim: 128
+  output_hidden_dim: 16
+  activation: relu
+  dropout: 0.2
+  aggregation: mean
+  pair_symmetry: bidirectional_mean
+
+data:
+  min_items: 3
+  max_items: 8
+
+# Keep the current V5 regime fixed. The experiment changes only train batching
+# (complete paired families) and adds the auxiliary paired-logistic term.
+training:
+  optimizer: adamw
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  batch_size: 256
+  max_epochs: 60
+  early_stopping_patience: 10
+  early_stopping_min_epochs: 30
+  early_stopping_min_delta: 0.0
+  lr_scheduler: none
+  gradient_clipping: none
+  mixed_precision: false
+  seed: 42
+
+selection:
+  primary_metric: roc_auc
+  guardrail_metric: fitb_2way
+
+confirmation:
+  seeds:
+    - 42
+    - 43
+    - 44
+  canonical_seed: 42
