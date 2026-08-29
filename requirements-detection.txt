@@ -1,7 +1,9 @@
 # Detection runtime. PyTorch CUDA wheels may be provided by the target runtime.
-torch>=2.1
+# RF-DETR 1.8.3 requires transformers>=5.1,<6; keep this range aligned with
+# the detector package so pip can resolve the Colab environment.
+torch>=2.2
 numpy>=1.26,<3
 pillow>=10,<12
 huggingface_hub>=0.30,<2
-transformers>=4.51,<5
+transformers>=5.1,<6
 rfdetr==1.8.3
