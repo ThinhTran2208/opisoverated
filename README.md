@@ -16,6 +16,13 @@ Mục tiêu chính:
 - tạo **structured evidence** cho VLM sinh phần giải thích;
 - giữ pipeline đủ linh hoạt để thay đổi scorer mà không phải thay toàn bộ hệ thống.
 
+### Current delivery scope
+
+Canonical delivery hiện dùng frozen V5 scorer, LOO diagnosis và grounded VLM
+explanation. Garment detection được phát triển song song. Candidate retrieval /
+replacement recommendation chưa triển khai và được giữ làm future work; VLM
+không được tự bịa recommendation để lấp phần còn thiếu.
+
 Core scorer luôn trả về:
 
 ```text
@@ -233,22 +240,31 @@ VLM nhận structured evidence từ pipeline, ví dụ:
 
 ```json
 {
-  "compatibility_score": 78,
-  "problem_item": {
-    "category": "Shoes",
-    "loo_delta": 0.18
+  "schema_version": "vlm-evidence-v1",
+  "scorer": {
+    "compatibility_logit": -0.31,
+    "semantics": "uncalibrated_logit_not_probability"
   },
-  "recommendations": [
-    {
-      "item_id": "candidate_001",
-      "new_score": 84,
-      "score_gain": 6
-    }
-  ]
+  "diagnosis": {
+    "problematic_item_index": 2,
+    "problematic_item_id": "item_002",
+    "top1_top2_delta_gap": 0.18
+  },
+  "recommendation": {
+    "status": "not_implemented",
+    "items": []
+  }
 }
 ```
 
 Sau đó VLM chuyển evidence thành lời giải thích tự nhiên cho người dùng.
+
+VLM V1 dùng `Qwen/Qwen3-VL-4B-Instruct` theo contract tại
+`docs/VLM_EXPLANATION_V1.md`. Qwen chỉ xuất visual-analysis enum theo taxonomy
+đóng; code mới render phần tiếng Việt bằng template đã review. Vì không nhận
+free-text từ Qwen, validator có thể hard-fail mọi attempt chèn replacement
+suggestion. Problematic item do LOO chọn là authoritative và recommendation
+luôn giữ `status = not_implemented`.
 
 Mục tiêu là giữ:
 

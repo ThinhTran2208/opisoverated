@@ -1,0 +1,6 @@
+accelerate>=1.0,<2
+datasets>=3.0,<5
+Pillow>=10,<13
+qwen-vl-utils==0.0.14
+safetensors>=0.4,<1
+transformers>=4.57,<5
