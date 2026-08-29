@@ -91,8 +91,8 @@ def validate_s3_config(config: Mapping[str, object]) -> None:
         raise TrainingContractError(f"model.name must be {SCORER_VERSION!r}")
     if not isinstance(data_config, Mapping):
         raise TrainingContractError("config['data'] must be a mapping")
-    if int(data_config.get("min_items", -1)) != 3:
-        raise TrainingContractError("Scorer V1 locks data.min_items = 3")
+    if int(data_config.get("min_items", -1)) != 2:
+        raise TrainingContractError("Min-items-2 experiment locks data.min_items = 2")
     if int(data_config.get("max_items", -1)) != 8:
         raise TrainingContractError("Scorer V1 locks data.max_items = 8")
 
