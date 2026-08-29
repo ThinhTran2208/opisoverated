@@ -8,6 +8,7 @@ from src.data.min2_experiment import (
     MIN_SCORER_ITEMS,
     scorer_ready_path,
 )
+from src.data.prepare_core7_dataset import build_clean_positive_samples
 from src.diagnosis.loo import LOOInputError, build_leave_one_out_outfits
 
 try:
@@ -30,6 +31,30 @@ class Min2ContractTests(unittest.TestCase):
             path = scorer_ready_path(Path(temp_dir), "train")
             self.assertEqual(path.name, "scorer_ready_min2_exp_v1_train.jsonl")
             self.assertNotEqual(path.name, "scorer_ready_v2_train.jsonl")
+
+    def test_data_processing_keeps_two_items_and_drops_one_item(self):
+        kits = [{"kit_id": "keep"}, {"kit_id": "drop"}]
+        raw_kit_to_items = {
+            "keep": [
+                {"item_id": "keep_1"},
+                {"item_id": "keep_2"},
+            ],
+            "drop": [{"item_id": "drop_1"}],
+        }
+        filtered_kit_to_items = raw_kit_to_items
+
+        samples, report = build_clean_positive_samples(
+            kits,
+            raw_kit_to_items,
+            filtered_kit_to_items,
+            min_items=MIN_SCORER_ITEMS,
+        )
+
+        self.assertEqual([sample["source_kit_id"] for sample in samples], ["keep"])
+        self.assertEqual(samples[0]["items"], ["keep_1", "keep_2"])
+        self.assertEqual(report["outfits_kept"], 1)
+        self.assertEqual(report["outfits_dropped_below_min_items"], 1)
+        self.assertEqual(report["min_items"], 2)
 
     def test_loo_three_items_produces_two_item_residuals(self):
         residuals = build_leave_one_out_outfits(["top", "bottom", "shoes"])
