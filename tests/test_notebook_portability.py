@@ -87,6 +87,29 @@ class NotebookPortabilityTests(unittest.TestCase):
         self.assertIn('metrics["mean_logit_margin"]', code)
         self.assertIn('metrics["median_logit_margin"]', code)
 
+    def test_nb5_exposes_balanced_60_epoch_paired_control(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        notebook = json.loads(
+            (
+                repo_root
+                / "notebooks/experiments/NB5_type_aware_pairwise_v1.ipynb"
+            ).read_text(encoding="utf-8")
+        )
+        code = "\n".join(
+            "".join(cell.get("source", []))
+            for cell in notebook["cells"]
+            if cell.get("cell_type") == "code"
+        )
+
+        self.assertIn(
+            "scorer_type_aware_pairwise_v1_paired_ranking_balanced_60ep.yaml",
+            code,
+        )
+        self.assertIn("RUN_S3_1_PAIRED_BALANCED_60 = False", code)
+        self.assertIn("RESUME_S3_1_PAIRED_BALANCED_60 = False", code)
+        self.assertIn("1.0 / math.sqrt(32.0)", code)
+        self.assertIn('"s3_1_paired_ranking_balanced_init_60ep"', code)
+
 
 if __name__ == "__main__":
     unittest.main()
