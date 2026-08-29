@@ -1,7 +1,10 @@
 experiment:
   name: v5_paired_ranking_recheck
   description: controlled S3.1 recheck on top of the frozen V5 training regime
+  # 0.00 isolates the effect of paired-family batching with BCE only.
+  # 0.10 and 0.25 then measure the additional effect of paired ranking loss.
   ranking_weights:
+    - 0.00
     - 0.10
     - 0.25
   baseline_valid_roc_auc: 0.6905082489625538
@@ -27,8 +30,8 @@ data:
   min_items: 3
   max_items: 8
 
-# Keep the current V5 regime fixed. The experiment changes only train batching
-# (complete paired families) and adds the auxiliary paired-logistic term.
+# Keep the current V5 regime fixed. The experiment changes train batching to
+# complete paired families; weights >0 additionally add paired-logistic loss.
 training:
   optimizer: adamw
   learning_rate: 0.0003
