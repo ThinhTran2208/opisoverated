@@ -15,7 +15,7 @@ model:
   pair_symmetry: bidirectional_mean
 
 data:
-  min_items: 3
+  min_items: 2
   max_items: 8
 
 # Validation-AUC profile selected from the completed scorer diagnostics.
