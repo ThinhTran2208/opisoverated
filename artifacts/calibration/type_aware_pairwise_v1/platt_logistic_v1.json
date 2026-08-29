@@ -1,0 +1,42 @@
+{
+  "bias": -0.17733224823027438,
+  "calibration_version": "platt-logistic-v1",
+  "metadata": {
+    "category_mapping_version": "core7-v2",
+    "checkpoint_best_valid_roc_auc": 0.6905082489625538,
+    "checkpoint_epoch": 52,
+    "checkpoint_path": "artifacts/checkpoints/type_aware_pairwise_v1/final_val_auc_v5_seed42/best.pt",
+    "checkpoint_sha256": "7b3d0b6e0d44e3de517565f5725ded198bbc762b02a4dece26a58ee145cfed9c",
+    "dataset_manifest_sha256": "eec9a8f5b8682af398013343d4092b028aec196421979149812188ab87b611c0",
+    "dataset_version": "polyvore1000-core7-compat-v2",
+    "embedding_manifest_sha256": "0e39419896ec8e04b6ec754fb79fe77bedda53355022e3488ae9b883fba15e2c",
+    "embedding_version": "fashionclip-512-l2-v1",
+    "fit_metrics": {
+      "accuracy_at_0_5": 0.6370402802101576,
+      "brier": 0.22235600834365718,
+      "ece_10": 0.010862637997107814,
+      "mean_probability": 0.4999999999173947,
+      "nll": 0.6349743271333637,
+      "sample_count": 2284
+    },
+    "fit_optimizer": "deterministic-adam-v1",
+    "fit_sample_count": 2284,
+    "fit_split": "valid",
+    "fit_steps": 388,
+    "negative_protocol_version": "negative-v1",
+    "raw_sigmoid_metrics": {
+      "accuracy_at_0_5": 0.6330998248686515,
+      "brier": 0.23863341425396492,
+      "ece_10": 0.11419244360988917,
+      "mean_probability": 0.5672197427358338,
+      "nll": 0.6972924484503826,
+      "sample_count": 2284
+    },
+    "scorer_checkpoint_git_commit": "7cbbb19fd89352b7ef54038e57b4d8208b7ee1f6",
+    "scorer_seed": 42,
+    "test_split_loaded": false
+  },
+  "method": "positive-scale-platt",
+  "scale": 0.47217959118640485,
+  "scorer_version": "type_aware_pairwise_v1"
+}
