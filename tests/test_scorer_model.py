@@ -31,7 +31,7 @@ class TypeAwarePairwiseScorerTests(unittest.TestCase):
                 "pair_symmetry": "bidirectional_mean",
             },
             "data": {
-                "min_items": 3,
+                "min_items": 2,
                 "max_items": 8,
             },
         }
@@ -56,6 +56,7 @@ class TypeAwarePairwiseScorerTests(unittest.TestCase):
         self.assertEqual(self.model.category_vocab_size, 8)
         self.assertEqual(self.model.item_hidden_dim, 128)
         self.assertEqual(self.model.pair_feature_dim, 576)
+        self.assertEqual(self.model.min_items, 2)
 
     def test_category_embedding_init_matches_fashionclip_scale(self):
         weights = self.model.category_embedding.weight.detach()
@@ -93,6 +94,22 @@ class TypeAwarePairwiseScorerTests(unittest.TestCase):
         logits = output["compatibility_logit"]
         self.assertEqual(tuple(logits.shape), (2,))
         self.assertTrue(torch.isfinite(logits).all())
+
+    def test_forward_accepts_two_item_outfit(self):
+        self.model.eval()
+        embeddings = torch.randn(1, 8, 512)
+        categories = torch.tensor([[1, 5, 0, 0, 0, 0, 0, 0]], dtype=torch.long)
+        item_mask = categories != 0
+        embeddings[~item_mask] = 0.0
+
+        output = self.model(embeddings, categories, item_mask)
+
+        self.assertEqual(tuple(output["compatibility_logit"].shape), (1,))
+        self.assertTrue(torch.isfinite(output["compatibility_logit"]).all())
+        self.assertEqual(
+            int(self.model._expected_pair_mask(item_mask).sum().item()),
+            1,
+        )
 
     def test_padding_embeddings_do_not_change_score(self):
         self.model.eval()
