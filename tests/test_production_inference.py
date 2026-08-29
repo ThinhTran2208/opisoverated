@@ -74,6 +74,13 @@ class ProductionInferenceV1Tests(unittest.TestCase):
         self.assertEqual(result["error"]["code"], "too_many_garments")
         self.assertEqual(result["error"]["details"]["maximum_supported"], 8)
 
+    def test_non_normalized_embedding_is_rejected(self):
+        items = [self._item(0, 1), self._item(1, 2), self._item(2, 5)]
+        items[1]["embedding"][1] = 2.0
+        result = self.pipeline.analyze_precomputed_safe(items)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error"]["code"], "embedding_not_l2_normalized")
+
     def test_image_boundary_fails_cleanly_until_detection_adapter_exists(self):
         result = self.pipeline.analyze_image_safe(object())
         self.assertEqual(result["status"], "error")
