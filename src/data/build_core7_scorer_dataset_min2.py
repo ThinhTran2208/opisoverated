@@ -8,14 +8,25 @@ Use an isolated runtime output directory for this experiment.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from . import build_core7_scorer_dataset as base
 
 
 MIN_SCORER_ITEMS = 2
+MIN_LOO_ORIGINAL_ITEMS = 3
 MAX_SCORER_ITEMS = 8
 EXPERIMENT_ID = "min-items-2-loo-min3-v1"
+EXPERIMENT_MANIFEST = "experiment_manifest_min2.json"
+
+
+def _require_isolated_output_dir(output_dir: Path) -> None:
+    if output_dir.name == "scorer_ready_v2":
+        raise ValueError(
+            "The min-items-2 experiment must not overwrite frozen scorer_ready_v2; "
+            "use an isolated directory such as scorer_ready_v2_min2_exp."
+        )
 
 
 def build_scorer_dataset_min2(**kwargs: Any) -> dict:
@@ -26,6 +37,11 @@ def build_scorer_dataset_min2(**kwargs: Any) -> dict:
     those globals for this isolated experiment and restore them afterwards so
     importing this module does not mutate normal V2 behavior elsewhere.
     """
+
+    if "output_dir" not in kwargs:
+        raise TypeError("build_scorer_dataset_min2 requires output_dir")
+    output_dir = Path(kwargs["output_dir"])
+    _require_isolated_output_dir(output_dir)
 
     original_default_min = base.DEFAULT_MIN_ITEMS
     original_validate_all_splits = base.validate_all_splits
@@ -45,4 +61,17 @@ def build_scorer_dataset_min2(**kwargs: Any) -> dict:
     result = dict(result)
     result["experiment_id"] = EXPERIMENT_ID
     result["minimum_outfit_items"] = MIN_SCORER_ITEMS
+    result["minimum_loo_original_items"] = MIN_LOO_ORIGINAL_ITEMS
+
+    experiment_manifest = {
+        "experiment_id": EXPERIMENT_ID,
+        "base_dataset_version": result.get("dataset_version", base.DATASET_VERSION),
+        "minimum_scorer_items": MIN_SCORER_ITEMS,
+        "maximum_scorer_items": MAX_SCORER_ITEMS,
+        "minimum_loo_original_items": MIN_LOO_ORIGINAL_ITEMS,
+        "status": result.get("status"),
+        "canonical_v2_artifacts_overwritten": False,
+    }
+    base.write_json(experiment_manifest, output_dir / EXPERIMENT_MANIFEST)
+    result["experiment_manifest"] = str(output_dir / EXPERIMENT_MANIFEST)
     return result
