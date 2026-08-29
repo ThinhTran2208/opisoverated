@@ -1,0 +1,7 @@
+# Detection runtime. PyTorch CUDA wheels may be provided by the target runtime.
+torch>=2.1
+numpy>=1.26,<3
+pillow>=10,<12
+huggingface_hub>=0.30,<2
+transformers>=4.51,<5
+rfdetr==1.8.3
