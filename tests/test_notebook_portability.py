@@ -105,6 +105,11 @@ class NotebookPortabilityTests(unittest.TestCase):
             "scorer_type_aware_pairwise_v1_paired_ranking_balanced_60ep.yaml",
             code,
         )
+        self.assertIn(
+            '"FASHION_REPO_REF", "exp/scorer-s3-1-balanced-60"',
+            code,
+        )
+        self.assertIn('"opisoverated_s31_balanced_60"', code)
         self.assertIn("RUN_S3_1_PAIRED_BALANCED_60 = False", code)
         self.assertIn("RESUME_S3_1_PAIRED_BALANCED_60 = False", code)
         self.assertIn("1.0 / math.sqrt(32.0)", code)
