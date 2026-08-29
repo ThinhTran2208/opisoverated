@@ -26,6 +26,27 @@ class PredictionDecision:
     rejection_reason: str | None = None
 
 
+def extract_projected_features(value: object, *, source: str) -> object:
+    """Normalize CLIP feature API differences across Transformers versions.
+
+    Transformers 4.x returned the projected feature tensor directly from
+    ``CLIPModel.get_text_features`` / ``get_image_features``. Transformers 5.x
+    returns ``BaseModelOutputWithPooling`` and stores the projected feature
+    tensor in ``pooler_output``. Keep the detection adapter compatible with both
+    contracts without changing the actual FashionCLIP representation.
+    """
+
+    pooler_output = getattr(value, "pooler_output", None)
+    if pooler_output is not None:
+        return pooler_output
+    if hasattr(value, "float"):
+        return value
+    raise TypeError(
+        f"{source} returned unsupported feature output {type(value).__name__}; "
+        "expected a tensor or an object with pooler_output"
+    )
+
+
 def select_core7_prediction(
     scores: Mapping[str, float],
     *,
@@ -115,7 +136,11 @@ class FashionCLIPCore7Encoder:
                     for key, value in inputs.items()
                     if key in {"input_ids", "attention_mask"}
                 }
-                features = model.get_text_features(**text_kwargs)
+                feature_output = model.get_text_features(**text_kwargs)
+                features = extract_projected_features(
+                    feature_output,
+                    source="CLIPModel.get_text_features",
+                )
                 features = self._normalize(features.float())
                 prototype = self._normalize(features.mean(dim=0, keepdim=True))[0]
                 category_names.append(category)
@@ -135,7 +160,11 @@ class FashionCLIPCore7Encoder:
         inputs = processor(images=list(crops), return_tensors="pt")
         pixel_values = inputs["pixel_values"].to(self.device)
         with torch.inference_mode():
-            features = model.get_image_features(pixel_values=pixel_values)
+            feature_output = model.get_image_features(pixel_values=pixel_values)
+        features = extract_projected_features(
+            feature_output,
+            source="CLIPModel.get_image_features",
+        )
         features = self._normalize(features.float())
         if features.ndim != 2 or int(features.shape[1]) != EXPECTED_EMBEDDING_DIM:
             raise ValueError(
