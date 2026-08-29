@@ -10,7 +10,7 @@ from src.detection.config import (
     EXPECTED_EMBEDDING_DIM,
     load_detection_config,
 )
-from src.detection.fashionclip import select_core7_prediction
+from src.detection.fashionclip import extract_projected_features, select_core7_prediction
 from src.detection.pipeline import build_scorer_batch_lists, expand_and_clamp_xyxy
 from src.detection.rfdetr import DEFAULT_CORE7_DETECTOR_LABELS, build_detection_candidates
 from src.detection.schema import CategoryPrediction, DetectedGarment, DetectionCandidate, DetectionResult
@@ -53,6 +53,33 @@ class DetectionCore7Tests(unittest.TestCase):
         self.assertEqual(len(rejected), 1)
         self.assertEqual(rejected[0]["detector_label"], "sleeve")
         self.assertNotIn("coarse_category", rejected[0])
+
+    def test_clip_feature_adapter_accepts_tensor_style_output(self):
+        class FakeTensor:
+            def float(self):
+                return self
+
+        feature = FakeTensor()
+        self.assertIs(
+            extract_projected_features(feature, source="test"),
+            feature,
+        )
+
+    def test_clip_feature_adapter_accepts_transformers5_pooler_output(self):
+        class FakeOutput:
+            pass
+
+        projected = object()
+        output = FakeOutput()
+        output.pooler_output = projected
+        self.assertIs(
+            extract_projected_features(output, source="test"),
+            projected,
+        )
+
+    def test_clip_feature_adapter_rejects_unknown_output(self):
+        with self.assertRaisesRegex(TypeError, "unsupported feature output"):
+            extract_projected_features(object(), source="test")
 
     def test_zero_shot_selection_reports_top1_and_margin(self):
         scores = {
