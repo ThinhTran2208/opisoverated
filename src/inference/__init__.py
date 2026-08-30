@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Production inference boundary for deploy-facing outfit analysis."""
 
+from .adapters import DetectionAdapter, ExplanationProvider, GarmentPreprocessor, VLMAdapter
+from .context import InferenceContext
 from .pipeline import (
     PIPELINE_VERSION,
     InferenceInputError,
@@ -9,6 +11,11 @@ from .pipeline import (
 
 __all__ = [
     "PIPELINE_VERSION",
+    "DetectionAdapter",
+    "ExplanationProvider",
+    "GarmentPreprocessor",
+    "InferenceContext",
     "InferenceInputError",
     "ProductionInferencePipeline",
+    "VLMAdapter",
 ]
