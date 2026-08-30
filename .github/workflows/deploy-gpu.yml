@@ -1,0 +1,90 @@
+name: Deploy production inference to GPU
+
+on:
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: Rebuild Docker images before deployment
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-gpu-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, gpu]
+    timeout-minutes: 120
+    environment: production-gpu
+
+    steps:
+      - name: Check out requested revision
+        uses: actions/checkout@v4
+
+      - name: Verify GPU and container runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          nvidia-smi
+          docker version
+          docker compose version
+
+      - name: Build production images
+        if: inputs.rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.gpu.yml build --pull
+
+      - name: Start production services
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.gpu.yml up -d --remove-orphans
+
+      - name: Wait for inference services
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          wait_for_health() {
+            local service_url="$1"
+            local service_name="$2"
+
+            for attempt in {1..90}; do
+              if curl --fail --silent --show-error --max-time 5 "$service_url" >/dev/null; then
+                echo "$service_name is healthy"
+                return 0
+              fi
+
+              echo "Waiting for $service_name ($attempt/90)"
+              sleep 10
+            done
+
+            echo "$service_name did not become healthy"
+            docker compose -f docker-compose.gpu.yml ps
+            docker compose -f docker-compose.gpu.yml logs --tail=200
+            return 1
+          }
+
+          wait_for_health http://127.0.0.1:8001/healthz vlm
+          wait_for_health http://127.0.0.1:8000/healthz inference-core
+
+      - name: Verify production contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error http://127.0.0.1:8000/healthz |
+            python -m json.tool
+
+      - name: Deployment diagnostics
+        if: always()
+        shell: bash
+        run: |
+          docker compose -f docker-compose.gpu.yml ps || true
+          docker compose -f docker-compose.gpu.yml logs --tail=100 || true
