@@ -104,9 +104,13 @@ class FullImageIntegrationTests(unittest.TestCase):
             captured["evidence"]["diagnosis"]["problematic_item_index"],
             result["diagnosis"]["problematic_item_index"],
         )
-        self.assertEqual(
+        # The scorer is evaluated once for product scoring and once inside LOO.
+        # CPU kernels can differ by a few float32 ulps, so test semantic agreement
+        # rather than bit-identical Python float serialization.
+        self.assertAlmostEqual(
             captured["evidence"]["scorer"]["compatibility_logit"],
             result["compatibility"]["compatibility_logit"],
+            places=6,
         )
 
 
