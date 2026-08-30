@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import base64
+import mimetypes
 import tempfile
 from pathlib import Path
 from typing import Mapping, Protocol, Sequence, runtime_checkable
@@ -31,6 +33,10 @@ class ExplanationProvider(Protocol):
         sample_id: str,
     ) -> object:
         ...
+
+
+class VLMServiceError(RuntimeError):
+    """Raised when a remote VLM service cannot produce a valid explanation."""
 
 
 class DetectionAdapter:
@@ -114,7 +120,7 @@ class DetectionAdapter:
 
 
 class VLMAdapter:
-    """Adapter from raw LOO evidence + garment crops to VLM Explanation V1."""
+    """In-process adapter from raw LOO evidence + garment crops to VLM V1."""
 
     def __init__(self, explanation_pipeline) -> None:
         self.pipeline = explanation_pipeline
@@ -160,3 +166,82 @@ class VLMAdapter:
             coarse_categories=coarse_categories,
         )
         return self.pipeline.explain(evidence, crop_image_refs)
+
+
+class RemoteVLMAdapter:
+    """Cross-service VLM adapter used by the inference-core container.
+
+    Crop files are short-lived members of ``InferenceContext``.  They are encoded
+    into the request before the context is cleaned, so the VLM runtime never needs
+    access to the inference-core filesystem.
+    """
+
+    def __init__(self, service_url: str, *, timeout_seconds: float = 180.0) -> None:
+        normalized = str(service_url).strip().rstrip("/")
+        if not normalized:
+            raise ValueError("service_url must be non-empty")
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        self.service_url = normalized
+        self.timeout_seconds = float(timeout_seconds)
+
+    def explain(
+        self,
+        loo_result: Mapping[str, object],
+        garments: Sequence[Mapping[str, object]],
+        crop_image_refs: Sequence[str | Path],
+        *,
+        sample_id: str,
+    ) -> object:
+        if len(crop_image_refs) != len(garments):
+            raise ValueError("RemoteVLMAdapter requires exactly one crop ref per garment")
+
+        encoded_crops: list[dict[str, str]] = []
+        for index, value in enumerate(crop_image_refs):
+            path = Path(value)
+            if not path.is_file():
+                raise FileNotFoundError(f"Missing crop image for item {index}: {path}")
+            mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            encoded_crops.append(
+                {
+                    "filename": path.name,
+                    "content_type": mime_type,
+                    "base64": base64.b64encode(path.read_bytes()).decode("ascii"),
+                }
+            )
+
+        payload = {
+            "sample_id": str(sample_id),
+            "loo_result": dict(loo_result),
+            "garments": [dict(value) for value in garments],
+            "crop_images": encoded_crops,
+        }
+        try:
+            import httpx
+        except ModuleNotFoundError as error:  # pragma: no cover - runtime dependency.
+            raise RuntimeError(
+                "httpx is required for the remote VLM adapter; install requirements-runtime.txt"
+            ) from error
+
+        try:
+            response = httpx.post(
+                f"{self.service_url}/v1/explain",
+                json=payload,
+                timeout=self.timeout_seconds,
+            )
+        except httpx.HTTPError as error:
+            raise VLMServiceError(f"VLM service request failed: {error}") from error
+
+        if response.status_code >= 400:
+            raise VLMServiceError(
+                f"VLM service returned HTTP {response.status_code}: {response.text[:500]}"
+            )
+        try:
+            body = response.json()
+        except ValueError as error:
+            raise VLMServiceError("VLM service returned non-JSON content") from error
+        if not isinstance(body, Mapping) or body.get("status") != "ok":
+            raise VLMServiceError(f"VLM service returned an invalid response: {body!r}")
+        if "explanation" not in body:
+            raise VLMServiceError("VLM service response is missing explanation")
+        return body["explanation"]
