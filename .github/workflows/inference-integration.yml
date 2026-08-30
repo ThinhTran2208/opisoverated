@@ -20,6 +20,7 @@ on:
       - "tests/test_full_image_integration.py"
       - "tests/test_http_image_api.py"
       - "tests/test_vlm_service_api.py"
+      - "tests/test_benchmark_harness.py"
       - "requirements-runtime.txt"
       - "requirements-detection.txt"
       - "requirements-vlm.txt"
@@ -29,6 +30,7 @@ on:
       - "docker-compose.gpu.yml"
       - ".dockerignore"
       - ".github/workflows/inference-integration.yml"
+      - ".github/workflows/gpu-benchmark.yml"
   push:
     branches:
       - main
@@ -63,6 +65,7 @@ jobs:
             tests.test_full_image_integration \
             tests.test_http_image_api \
             tests.test_vlm_service_api \
+            tests.test_benchmark_harness \
             -v
 
       - name: Build lightweight precomputed deploy image
