@@ -1,11 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Stable production inference boundary for scorer + calibration + LOO.
-
-The deploy-facing core accepts precomputed garment records today, while image
-preprocessing (detection/cropping/FashionCLIP/category resolution) and VLM
-explanation remain plug-in adapters.  This prevents unfinished components from
-changing the frozen scorer/calibration contract.
-"""
+"""Production boundary: DetectionAdapter -> InferenceContext -> scorer/LOO -> VLMAdapter."""
 
 from __future__ import annotations
 
@@ -23,6 +17,8 @@ from src.calibration import load_calibrator
 from src.diagnosis.loo import diagnose_outfit
 from src.scorer.checkpoint import load_checkpoint, sha256_file
 from src.scorer.model import TypeAwarePairwiseScorer
+
+from .context import InferenceContext
 
 
 PIPELINE_VERSION = "outfit-production-inference-v1"
@@ -76,6 +72,9 @@ def _clean_item_for_output(
         "detection_label",
         "detection_confidence",
         "bbox",
+        "crop_bbox",
+        "category_similarity",
+        "category_margin",
     ):
         if key in item and item[key] is not None:
             output[key] = item[key]
@@ -83,7 +82,13 @@ def _clean_item_for_output(
 
 
 class ProductionInferencePipeline:
-    """One stable ML call for product/backend integration."""
+    """One stable ML call for product/backend integration.
+
+    Canonical image flow:
+
+    DetectionAdapter -> InferenceContext -> scorer -> calibration -> LOO
+                     -> VLMAdapter(raw LOO, garments, crop refs)
+    """
 
     def __init__(
         self,
@@ -93,17 +98,28 @@ class ProductionInferencePipeline:
         pipeline_version: str = PIPELINE_VERSION,
         category_mapping_version: str = "core7-v2",
         embedding_version: str = "fashionclip-512-l2-v1",
+        detection_adapter=None,
+        vlm_adapter=None,
+        # Compatibility aliases for the first production-inference draft.
         garment_preprocessor=None,
         explanation_provider=None,
     ) -> None:
         _require_torch()
+        if detection_adapter is not None and garment_preprocessor is not None:
+            raise ValueError("Provide detection_adapter or garment_preprocessor, not both")
+        if vlm_adapter is not None and explanation_provider is not None:
+            raise ValueError("Provide vlm_adapter or explanation_provider, not both")
+
         self.scorer = scorer
         self.calibrator = calibrator
         self.pipeline_version = str(pipeline_version)
         self.category_mapping_version = str(category_mapping_version)
         self.embedding_version = str(embedding_version)
-        self.garment_preprocessor = garment_preprocessor
-        self.explanation_provider = explanation_provider
+        self.detection_adapter = detection_adapter or garment_preprocessor
+        self.vlm_adapter = vlm_adapter or explanation_provider
+        # Old attributes remain readable for downstream code during migration.
+        self.garment_preprocessor = self.detection_adapter
+        self.explanation_provider = self.vlm_adapter
 
         if self.pipeline_version != PIPELINE_VERSION:
             raise ValueError(
@@ -137,6 +153,8 @@ class ProductionInferencePipeline:
         *,
         repo_root: Path | str | None = None,
         device: str | object = "cpu",
+        detection_adapter=None,
+        vlm_adapter=None,
         garment_preprocessor=None,
         explanation_provider=None,
     ) -> "ProductionInferencePipeline":
@@ -184,18 +202,13 @@ class ProductionInferencePipeline:
             pipeline_version=str(manifest["pipeline_version"]),
             category_mapping_version=str(manifest["category_mapping_version"]),
             embedding_version=str(manifest["embedding_version"]),
+            detection_adapter=detection_adapter,
+            vlm_adapter=vlm_adapter,
             garment_preprocessor=garment_preprocessor,
             explanation_provider=explanation_provider,
         )
 
-    def _validate_and_stack_items(
-        self, items: Sequence[Mapping[str, object]]
-    ):
-        if isinstance(items, (str, bytes)) or not isinstance(items, Sequence):
-            raise InferenceInputError(
-                "invalid_items", "items must be a sequence of garment records"
-            )
-        item_count = len(items)
+    def _validate_item_count(self, item_count: int) -> None:
         if item_count < MIN_ITEMS:
             raise InferenceInputError(
                 "insufficient_garments",
@@ -208,18 +221,121 @@ class ProductionInferencePipeline:
         if item_count > MAX_ITEMS:
             raise InferenceInputError(
                 "too_many_garments",
-                f"At most {MAX_ITEMS} garments are supported; "
-                "input is never silently truncated",
+                f"At most {MAX_ITEMS} garments are supported; input is never silently truncated",
                 details={
                     "detected_count": item_count,
                     "maximum_supported": MAX_ITEMS,
                 },
             )
 
-        tensors = []
+    def _validate_embedding_matrix(self, embeddings):
+        matrix = torch.as_tensor(embeddings, dtype=torch.float32)
+        if matrix.ndim != 2 or int(matrix.shape[1]) != EMBEDDING_DIM:
+            raise InferenceInputError(
+                "invalid_embedding_shape",
+                f"embeddings must have shape [N, {EMBEDDING_DIM}]",
+                details={"shape": list(matrix.shape)},
+            )
+        if not bool(torch.isfinite(matrix).all()):
+            raise InferenceInputError(
+                "non_finite_embedding", "embeddings contain NaN/Inf"
+            )
+        norms = torch.linalg.vector_norm(matrix, dim=1)
+        invalid = torch.nonzero(
+            torch.abs(norms - 1.0) > EMBEDDING_NORM_TOLERANCE,
+            as_tuple=False,
+        ).flatten()
+        if int(invalid.numel()) > 0:
+            index = int(invalid[0])
+            raise InferenceInputError(
+                "embedding_not_l2_normalized",
+                f"garment embedding at index {index} must be L2-normalized",
+                details={
+                    "item_index": index,
+                    "embedding_norm": float(norms[index]),
+                    "expected_norm": 1.0,
+                    "tolerance": EMBEDDING_NORM_TOLERANCE,
+                },
+            )
+        return matrix
+
+    def _validate_context(self, context: InferenceContext):
+        if not isinstance(context, InferenceContext):
+            raise TypeError("detection_adapter.prepare() must return InferenceContext")
+
+        item_count = len(context)
+        self._validate_item_count(item_count)
+        embeddings = self._validate_embedding_matrix(context.embeddings)
+        categories = torch.as_tensor(context.categories)
+        if categories.ndim != 1 or int(categories.shape[0]) != item_count:
+            raise InferenceInputError(
+                "invalid_category_shape",
+                "categories must have shape [N]",
+                details={"shape": list(categories.shape)},
+            )
+        if categories.dtype == torch.bool:
+            raise InferenceInputError("invalid_category", "categories may not be boolean")
+        if categories.is_floating_point() and not bool(torch.equal(categories, categories.round())):
+            raise InferenceInputError("invalid_category", "categories must contain integer IDs")
+        categories = categories.long()
+        if bool(torch.any(categories < CATEGORY_MIN_ID)) or bool(
+            torch.any(categories > CATEGORY_MAX_ID)
+        ):
+            raise InferenceInputError(
+                "invalid_category",
+                f"coarse category IDs must be in [{CATEGORY_MIN_ID}, {CATEGORY_MAX_ID}]",
+            )
+
+        item_ids: list[str] = []
+        normalized_items: list[dict[str, object]] = []
+        for index, raw_item in enumerate(context.garments):
+            if not isinstance(raw_item, Mapping):
+                raise InferenceInputError(
+                    "invalid_item", f"garments[{index}] must be a mapping"
+                )
+            if "coarse_category_id" not in raw_item:
+                raise InferenceInputError(
+                    "missing_category",
+                    f"garments[{index}] is missing coarse_category_id",
+                )
+            raw_category_id = raw_item["coarse_category_id"]
+            if isinstance(raw_category_id, bool):
+                raise InferenceInputError(
+                    "invalid_category", f"garments[{index}] has invalid coarse_category_id"
+                )
+            try:
+                category_id = int(raw_category_id)
+            except (TypeError, ValueError) as error:
+                raise InferenceInputError(
+                    "invalid_category", f"garments[{index}] has invalid coarse_category_id"
+                ) from error
+            if category_id != int(categories[index]):
+                raise InferenceInputError(
+                    "category_context_mismatch",
+                    f"garments[{index}] category does not match InferenceContext.categories",
+                )
+            item_id = str(raw_item.get("item_id", f"item-{index}"))
+            item_ids.append(item_id)
+            normalized_items.append(_clean_item_for_output(raw_item, index))
+
+        if len(set(item_ids)) != len(item_ids):
+            raise InferenceInputError(
+                "duplicate_item_id", "item_id values must be unique within an outfit"
+            )
+        return embeddings, categories, item_ids, normalized_items
+
+    def _context_from_precomputed(
+        self, items: Sequence[Mapping[str, object]]
+    ) -> InferenceContext:
+        if isinstance(items, (str, bytes)) or not isinstance(items, Sequence):
+            raise InferenceInputError(
+                "invalid_items", "items must be a sequence of garment records"
+            )
+        self._validate_item_count(len(items))
+
+        garments: list[dict[str, object]] = []
+        embeddings = []
         category_ids = []
-        item_ids = []
-        normalized_items = []
         for index, raw_item in enumerate(items):
             if not isinstance(raw_item, Mapping):
                 raise InferenceInputError(
@@ -239,80 +355,38 @@ class ProductionInferencePipeline:
                     f"items[{index}] is missing coarse_category_id",
                     details={"item_index": index},
                 )
-
-            vector = torch.as_tensor(raw_item["embedding"], dtype=torch.float32)
-            if vector.ndim != 1 or int(vector.shape[0]) != EMBEDDING_DIM:
-                raise InferenceInputError(
-                    "invalid_embedding_shape",
-                    f"items[{index}] embedding must have shape [{EMBEDDING_DIM}]",
-                    details={"item_index": index, "shape": list(vector.shape)},
-                )
-            if not torch.isfinite(vector).all():
-                raise InferenceInputError(
-                    "non_finite_embedding",
-                    f"items[{index}] embedding contains NaN/Inf",
-                    details={"item_index": index},
-                )
-            embedding_norm = float(torch.linalg.vector_norm(vector))
-            if abs(embedding_norm - 1.0) > EMBEDDING_NORM_TOLERANCE:
-                raise InferenceInputError(
-                    "embedding_not_l2_normalized",
-                    f"items[{index}] embedding must be L2-normalized",
-                    details={
-                        "item_index": index,
-                        "embedding_norm": embedding_norm,
-                        "expected_norm": 1.0,
-                        "tolerance": EMBEDDING_NORM_TOLERANCE,
-                    },
-                )
-
-            raw_category_id = raw_item["coarse_category_id"]
-            if isinstance(raw_category_id, bool):
-                raise InferenceInputError(
-                    "invalid_category",
-                    f"items[{index}] has invalid coarse_category_id",
-                )
-            try:
-                category_id = int(raw_category_id)
-            except (TypeError, ValueError) as error:
-                raise InferenceInputError(
-                    "invalid_category",
-                    f"items[{index}] has invalid coarse_category_id",
-                ) from error
-            if not CATEGORY_MIN_ID <= category_id <= CATEGORY_MAX_ID:
-                raise InferenceInputError(
-                    "invalid_category",
-                    f"items[{index}] coarse_category_id must be in "
-                    f"[{CATEGORY_MIN_ID}, {CATEGORY_MAX_ID}]",
-                    details={
-                        "item_index": index,
-                        "coarse_category_id": category_id,
-                    },
-                )
-
-            item_id = str(raw_item.get("item_id", f"item-{index}"))
-            tensors.append(vector)
-            category_ids.append(category_id)
-            item_ids.append(item_id)
-            normalized_items.append(_clean_item_for_output(raw_item, index))
-
-        if len(set(item_ids)) != len(item_ids):
-            raise InferenceInputError(
-                "duplicate_item_id", "item_id values must be unique within an outfit"
+            embeddings.append(raw_item["embedding"])
+            category_ids.append(raw_item["coarse_category_id"])
+            garments.append(
+                {key: value for key, value in raw_item.items() if key != "embedding"}
             )
 
-        embeddings = torch.stack(tensors, dim=0)
-        categories = torch.tensor(category_ids, dtype=torch.long)
-        return embeddings, categories, item_ids, normalized_items
-
-    def analyze_precomputed(
-        self, items: Sequence[Mapping[str, object]]
-    ) -> dict[str, object]:
-        """Run scorer -> calibration -> LOO over precomputed garment inputs."""
-
-        embeddings, categories, item_ids, normalized_items = (
-            self._validate_and_stack_items(items)
+        try:
+            matrix = torch.stack(
+                [torch.as_tensor(value, dtype=torch.float32) for value in embeddings],
+                dim=0,
+            )
+        except RuntimeError as error:
+            raise InferenceInputError(
+                "invalid_embedding_shape",
+                f"all item embeddings must have shape [{EMBEDDING_DIM}]",
+            ) from error
+        return InferenceContext(
+            garments=garments,
+            embeddings=matrix,
+            categories=category_ids,
+            metadata={"source": "precomputed"},
         )
+
+    def analyze_context(
+        self,
+        context: InferenceContext,
+        *,
+        include_explanation: bool = True,
+    ) -> dict[str, object]:
+        """Run the stable scorer/calibration/LOO core on one inference context."""
+
+        embeddings, categories, item_ids, normalized_items = self._validate_context(context)
         try:
             device = next(self.scorer.parameters()).device
         except StopIteration:
@@ -320,7 +394,7 @@ class ProductionInferencePipeline:
 
         model_embeddings = embeddings.unsqueeze(0).to(device)
         model_categories = categories.unsqueeze(0).to(device)
-        item_mask = torch.ones((1, len(items)), dtype=torch.bool, device=device)
+        item_mask = torch.ones((1, len(context)), dtype=torch.bool, device=device)
 
         self.scorer.eval()
         with torch.inference_mode():
@@ -335,22 +409,24 @@ class ProductionInferencePipeline:
             else None
         )
         if not isinstance(logit_tensor, torch.Tensor) or logit_tensor.shape != (1,):
-            raise RuntimeError(
-                "Scorer violated compatibility_logit [B] output contract"
-            )
+            raise RuntimeError("Scorer violated compatibility_logit [B] output contract")
         compatibility_logit = float(logit_tensor.detach().cpu()[0])
         if not math.isfinite(compatibility_logit):
             raise RuntimeError("Scorer returned non-finite compatibility_logit")
 
+        # Keep the complete raw LOO result in memory.  The VLM adapter consumes
+        # this object directly instead of reverse-engineering the public response.
         diagnosis = diagnose_outfit(
             self.scorer,
             embeddings,
             categories,
             item_ids=item_ids,
         )
+
         response: dict[str, object] = {
             "status": "ok",
-            "item_count": len(items),
+            "request_id": context.request_id,
+            "item_count": len(context),
             "items": normalized_items,
             "compatibility": {
                 "compatibility_logit": compatibility_logit,
@@ -365,18 +441,36 @@ class ProductionInferencePipeline:
                 "problematic_item_index": diagnosis["problematic_item_index"],
                 "problematic_item_id": diagnosis["problematic_item_id"],
                 "ranked_item_indices": diagnosis["ranked_item_indices"],
-                "deltas_without_minus_full": diagnosis[
-                    "deltas_without_minus_full"
-                ],
+                "deltas_without_minus_full": diagnosis["deltas_without_minus_full"],
                 "uses_two_item_extrapolation": diagnosis[
                     "uses_two_item_extrapolation"
                 ],
             },
             "versions": self.versions,
         }
-        if self.explanation_provider is not None:
-            response["explanation"] = self.explanation_provider.explain(response)
+        if context.metadata:
+            response["preprocessing"] = dict(context.metadata)
+
+        if include_explanation and self.vlm_adapter is not None:
+            if len(context.crop_image_refs) != len(context):
+                raise RuntimeError(
+                    "VLM explanation requires one crop image reference per garment"
+                )
+            response["explanation"] = self.vlm_adapter.explain(
+                diagnosis,
+                context.garments,
+                context.crop_image_refs,
+                sample_id=context.request_id,
+            )
         return response
+
+    def analyze_precomputed(
+        self, items: Sequence[Mapping[str, object]]
+    ) -> dict[str, object]:
+        """Compatibility endpoint for already-computed FashionCLIP records."""
+
+        context = self._context_from_precomputed(items)
+        return self.analyze_context(context, include_explanation=False)
 
     def analyze_precomputed_safe(
         self, items: Sequence[Mapping[str, object]]
@@ -391,13 +485,18 @@ class ProductionInferencePipeline:
             }
 
     def analyze_image(self, image: object) -> dict[str, object]:
-        if self.garment_preprocessor is None:
+        if self.detection_adapter is None:
             raise InferenceInputError(
                 "image_preprocessor_unavailable",
                 "Detection/FashionCLIP runtime adapter is not configured",
             )
-        items = self.garment_preprocessor.prepare(image)
-        return self.analyze_precomputed(items)
+        context = self.detection_adapter.prepare(image)
+        if not isinstance(context, InferenceContext):
+            raise TypeError("detection_adapter.prepare() must return InferenceContext")
+        try:
+            return self.analyze_context(context, include_explanation=True)
+        finally:
+            context.close()
 
     def analyze_image_safe(self, image: object) -> dict[str, object]:
         try:
