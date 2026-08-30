@@ -1,8 +1,6 @@
 # Inference Context Architecture V1
 
-## Purpose
-
-Production image inference now uses a single managed context object between image preprocessing and downstream reasoning. The scorer no longer reconstructs VLM inputs from the public JSON response.
+## Canonical internal flow
 
 ```text
 DetectionAdapter
@@ -15,7 +13,6 @@ InferenceContext
 └── original_image
 
         ↓
-
 Scorer
 Calibration
 LOO
@@ -27,61 +24,112 @@ VLMAdapter(
 )
 ```
 
-## DetectionAdapter
+## Why `InferenceContext` exists
 
-`src.inference.adapters.DetectionAdapter` wraps the merged `src.detection.DetectionPipeline`.
+The image path needs more information than the scorer itself consumes. The
+scorer only needs FashionCLIP embeddings and Core-7 category IDs, while the VLM
+needs stable garment metadata and one crop reference per item. Passing a single
+managed context keeps those views aligned without putting image concerns into
+the frozen scorer.
 
-It runs RF-DETR, crop extraction, FashionCLIP embedding and Core-7 classification once. The accepted FashionCLIP embedding is reused directly by the scorer.
+`InferenceContext` owns:
 
-The adapter returns `InferenceContext`, not a loose list of dictionaries.
+- ordered garment metadata;
+- `[N, 512]` FashionCLIP embeddings;
+- `[N]` Core-7 IDs;
+- one crop reference per accepted garment when visual explanation is enabled;
+- the decoded original image for request-local use;
+- request ID and preprocessing metadata;
+- cleanup callback for temporary crop storage.
 
-## InferenceContext
+The object is a context manager and `close()` is idempotent.
 
-`src.inference.context.InferenceContext` owns all state for one image request:
+## Detection adapter
 
-- `garments`: deployment-safe item metadata, without embedding duplication;
-- `embeddings`: `[N, 512]` L2-normalized FashionCLIP vectors;
-- `categories`: `[N]` Core-7 IDs;
-- `crop_image_refs`: exactly one temporary crop reference per accepted garment when visual explanation is enabled;
-- `original_image`: normalized original image object;
-- `request_id`: stable ID shared by scorer/LOO/VLM outputs;
-- `metadata`: preprocessing provenance, including Detection V1 metadata.
+`DetectionAdapter` wraps merged Detection V1. It runs RF-DETR and FashionCLIP,
+creates stable `garment-{index}` IDs, reuses the same L2-normalized FashionCLIP
+vectors for the scorer, and writes temporary crop images for the VLM.
 
-The context also owns crop cleanup. `ProductionInferencePipeline.analyze_image()` always closes the context in `finally`, so temporary crops live through VLM inference but are removed after the request completes.
+The temporary directory remains alive until scorer, calibration, LOO, and VLM
+processing have completed. `ProductionInferencePipeline.analyze_image()` closes
+the context in a `finally` block.
 
-## Scorer / Calibration / LOO
+## Scorer / calibration / LOO
 
-`ProductionInferencePipeline.analyze_context()` validates the context, then runs:
+`ProductionInferencePipeline.analyze_context()` validates:
 
-1. frozen compatibility scorer;
-2. Calibration V1 to obtain the product-facing score;
-3. LOO diagnosis.
-
-The complete raw LOO object remains internal. The public diagnosis response may remain compact, but downstream VLM code receives the full object including `full_logit`, `without_item_logits`, `deltas_without_minus_full`, ranking and extrapolation flag.
-
-## VLMAdapter
-
-`src.inference.adapters.VLMAdapter` consumes exactly:
-
-```python
-VLMAdapter.explain(
-    loo_result,
-    garments,
-    crop_image_refs,
-    sample_id=...,
-)
+```text
+3 <= item_count <= 8
+embedding shape == [N, 512]
+finite embeddings
+L2 norm within tolerance
+Core-7 IDs in 1..7
+garment/category alignment
+unique item IDs
 ```
 
-It builds the existing `vlm-evidence-v1` contract with `build_vlm_evidence()` and invokes `VLMExplanationPipeline` with one crop reference per item.
+It then runs the frozen scorer, converts the raw logit through Calibration V1,
+and computes LOO. The complete raw `diagnose_outfit()` result is kept in memory
+for the explanation adapter.
 
-The VLM does not infer or override the problematic item. That decision remains authoritative from frozen scorer + LOO.
+The public response exposes a smaller diagnosis object, but the VLM is not built
+by reverse-engineering that public JSON.
+
+## VLM adapter
+
+The in-process `VLMAdapter` receives:
+
+```text
+raw LOO result
+garment metadata
+crop refs
+sample/request ID
+```
+
+It builds the existing `vlm-evidence-v1` object and invokes VLM Explanation V1.
+This preserves the existing grounding rule that the VLM cannot change the
+problematic item chosen by LOO.
+
+## Split runtime adapter
+
+Detection V1 and the canonical Qwen VLM use incompatible Transformers major
+ranges. Production therefore also provides `RemoteVLMAdapter`, which implements
+the exact same adapter interface over HTTP.
+
+Before context cleanup it reads each crop, base64-encodes it, and calls the
+separate VLM service. The VLM service recreates request-local crop files and
+runs the normal in-process `VLMAdapter` there.
+
+This means deployment can be split as:
+
+```text
+inference-core                          vlm service
+--------------                         -----------
+Detection V1                           Qwen3-VL
+FashionCLIP                            VLM evidence validator
+Scorer                                 explanation renderer
+Calibration V1
+LOO
+
+       RemoteVLMAdapter  ───────────→  POST /v1/explain
+```
+
+No shared filesystem is required.
 
 ## Precomputed compatibility path
 
-`analyze_precomputed()` is retained for backend testing and clients that already provide 512-d embeddings. It creates an `InferenceContext` internally but disables visual explanation because no crop references are available.
+`analyze_precomputed()` remains supported for backend/debug integration. It
+constructs an `InferenceContext` without crop refs and deliberately skips VLM
+visual explanation.
 
-## Runtime dependency boundary
+## HTTP boundary
 
-Adapters are lazy-loaded. Importing `src.inference` does not import RF-DETR, FashionCLIP, Transformers, or Qwen model weights.
+The final image endpoint is:
 
-This is important because the canonical Detection V1 and Qwen VLM environments currently have incompatible Transformers major-version constraints. The context contract remains valid whether the adapters eventually run in one compatible process or across separate services.
+```text
+POST /v1/analyze-outfit
+```
+
+It decodes the uploaded image and calls `analyze_image()` through the same
+context lifecycle. See `docs/PRODUCTION_IMAGE_DEPLOY_V1.md` for Docker and
+benchmark instructions.
