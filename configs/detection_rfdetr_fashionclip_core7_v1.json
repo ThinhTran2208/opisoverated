@@ -1,0 +1,89 @@
+{
+  "detection_version": "rfdetr-fashionclip-core7-v1",
+  "detector": {
+    "repo_id": "resoa/garment-detector-seg",
+    "architecture": "RFDETRSegSmall",
+    "threshold": 0.35,
+    "supported_labels": [
+      "shirt, blouse",
+      "top, t-shirt, sweatshirt",
+      "sweater",
+      "cardigan",
+      "jacket",
+      "vest",
+      "pants",
+      "shorts",
+      "skirt",
+      "coat",
+      "dress",
+      "jumpsuit",
+      "cape",
+      "hat",
+      "shoe",
+      "bag, wallet"
+    ],
+    "label_usage": "candidate_filter_only_not_coarse_mapping"
+  },
+  "fashionclip": {
+    "model_id": "patrickjohncyh/fashion-clip",
+    "embedding_dim": 512,
+    "normalization": "l2",
+    "reuse_embedding_for_scorer": true
+  },
+  "coarse_category_classifier": {
+    "version": "fashionclip-zero-shot-core7-v1",
+    "category_mapping_version": "core7-v2",
+    "method": "cosine_similarity_image_to_text_prototypes",
+    "prototype_pooling": "l2_normalize_each_prompt_then_mean_then_l2_normalize",
+    "min_similarity": null,
+    "min_margin": 0.0,
+    "prompts": {
+      "TOP": [
+        "a photo of a top garment",
+        "a shirt, blouse, t-shirt, hoodie, sweater, sweatshirt, tank top, or polo"
+      ],
+      "BOTTOM": [
+        "a photo of a bottom garment",
+        "pants, jeans, shorts, leggings, or a skirt"
+      ],
+      "DRESS": [
+        "a photo of a dress",
+        "a dress, gown, romper, or jumpsuit"
+      ],
+      "OUTERWEAR": [
+        "a photo of outerwear",
+        "a jacket, coat, blazer, cardigan, vest, or cape"
+      ],
+      "SHOES": [
+        "a photo of shoes",
+        "boots, sneakers, sandals, pumps, flats, loafers, or other shoes"
+      ],
+      "BAG": [
+        "a photo of a bag",
+        "a handbag, shoulder bag, clutch, backpack, briefcase, or messenger bag"
+      ],
+      "HAT": [
+        "a photo of a hat",
+        "a cap or hat"
+      ]
+    }
+  },
+  "crop": {
+    "padding_ratio": 0.03,
+    "min_side_px": 24
+  },
+  "scorer_handoff": {
+    "min_items": 3,
+    "max_items": 8,
+    "category_ids": {
+      "TOP": 1,
+      "BOTTOM": 2,
+      "DRESS": 3,
+      "OUTERWEAR": 4,
+      "SHOES": 5,
+      "BAG": 6,
+      "HAT": 7
+    },
+    "padding_category_id": 0
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "schema_version": "vlm-real-qwen-smoke-reference-v1",
+  "status": "PASS",
+  "source_git_head": "f5117964f66824fcccd875a0c27a771af0f24368",
+  "split": "valid",
+  "test_split_loaded": false,
+  "sample_id": "216778558_neg_1",
+  "item_count": 4,
+  "model_id": "Qwen/Qwen3-VL-4B-Instruct",
+  "backend_class": "Qwen3VLBackend",
+  "cuda_device": "Tesla T4",
+  "checkpoint_epoch": 52,
+  "generation_attempts": 1,
+  "evidence_sha256": "65dd6a654e93b072aa6c8a04be2d8f5f99c0c3c01f154cbfaae14e22bbb842d5",
+  "visual_analysis_schema": "vlm-visual-analysis-v1",
+  "explanation_schema": "vlm-explanation-v1",
+  "visual_analysis_overall_support": "ambiguous",
+  "transformers_version": "4.57.6",
+  "qwen_vl_utils_version": "0.0.14",
+  "review": {
+    "accepted": true,
+    "notes": [
+      "Real Qwen3-VL-4B inference completed on Tesla T4.",
+      "The constrained response validated on the first generation attempt.",
+      "Qwen preserved the LOO-selected problematic item and emitted no free-text recommendation.",
+      "The ambiguous/low-confidence visual support is acceptable because visual evidence is not forced to agree with LOO."
+    ]
+  },
+  "external_artifacts": {
+    "colab_notebook": "https://colab.research.google.com/drive/13R27MWk2Op7HVizA36aAPcFF6pyhGjwJ#scrollTo=GwAkQu-XO46z",
+    "drive_folder": "https://drive.google.com/drive/folders/1KL5hUnMEo4QKj_50xVwyPZ6Rz2Qfq94q",
+    "evidence_json": "https://drive.google.com/file/d/1fQP3vAWxfuPHL07QPJZ7qQn0kGarN5iM/view",
+    "vlm_run_json": "https://drive.google.com/file/d/1u5ZwPc4_3RcK_YL-es02dlFyuaOzKcpc/view",
+    "real_qwen_smoke_report_json": "https://drive.google.com/file/d/1jqulKjrcFfmKpKA1NBhvHPLg8bqQODoO/view"
+  }
+}
