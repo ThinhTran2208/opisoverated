@@ -8,7 +8,7 @@ try:
 except ModuleNotFoundError:
     torch = None
 
-from src.inference import ProductionInferencePipeline
+from src.inference import InferenceContext, ProductionInferencePipeline
 
 
 @unittest.skipIf(torch is None, "PyTorch is not installed in lightweight portability CI")
@@ -30,7 +30,9 @@ class ProductionInferenceV1Tests(unittest.TestCase):
             "item_id": f"garment-{index}",
             "embedding": vector,
             "coarse_category_id": category_id,
-            "coarse_category": ["TOP", "BOTTOM", "SHOES"][index % 3],
+            "coarse_category": {1: "TOP", 2: "BOTTOM", 5: "SHOES"}.get(
+                category_id, "TOP"
+            ),
             "bbox": [index, index, index + 10, index + 20],
             "detection_confidence": 0.9,
         }
@@ -85,6 +87,66 @@ class ProductionInferenceV1Tests(unittest.TestCase):
         result = self.pipeline.analyze_image_safe(object())
         self.assertEqual(result["status"], "error")
         self.assertEqual(result["error"]["code"], "image_preprocessor_unavailable")
+
+    def test_image_flow_passes_raw_loo_and_crop_refs_to_vlm_adapter(self):
+        closed = {"value": False}
+        captured = {}
+
+        class FakeDetectionAdapter:
+            def prepare(self, image):
+                garments = []
+                embeddings = []
+                categories = [1, 2, 5]
+                names = ["TOP", "BOTTOM", "SHOES"]
+                for index, (category_id, name) in enumerate(zip(categories, names)):
+                    vector = torch.zeros(512, dtype=torch.float32)
+                    vector[index] = 1.0
+                    embeddings.append(vector)
+                    garments.append(
+                        {
+                            "item_id": f"garment-{index}",
+                            "coarse_category_id": category_id,
+                            "coarse_category": name,
+                            "bbox": [index, index, index + 10, index + 20],
+                        }
+                    )
+                return InferenceContext(
+                    garments=garments,
+                    embeddings=torch.stack(embeddings),
+                    categories=torch.tensor(categories, dtype=torch.long),
+                    crop_image_refs=[Path(f"crop-{index}.png") for index in range(3)],
+                    original_image=image,
+                    request_id="request-123",
+                    metadata={"detection": {"detection_version": "fake-v1"}},
+                    cleanup=lambda: closed.__setitem__("value", True),
+                )
+
+        class FakeVLMAdapter:
+            def explain(self, loo_result, garments, crop_image_refs, *, sample_id):
+                captured["loo_result"] = loo_result
+                captured["garments"] = list(garments)
+                captured["crop_image_refs"] = list(crop_image_refs)
+                captured["sample_id"] = sample_id
+                return {"headline": "fake explanation"}
+
+        pipeline = ProductionInferencePipeline(
+            scorer=self.pipeline.scorer,
+            calibrator=self.pipeline.calibrator,
+            detection_adapter=FakeDetectionAdapter(),
+            vlm_adapter=FakeVLMAdapter(),
+        )
+        result = pipeline.analyze_image(object())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["request_id"], "request-123")
+        self.assertEqual(result["explanation"]["headline"], "fake explanation")
+        self.assertEqual(captured["sample_id"], "request-123")
+        self.assertEqual(len(captured["crop_image_refs"]), 3)
+        self.assertEqual(len(captured["garments"]), 3)
+        self.assertIn("full_logit", captured["loo_result"])
+        self.assertIn("without_item_logits", captured["loo_result"])
+        self.assertIn("deltas_without_minus_full", captured["loo_result"])
+        self.assertTrue(closed["value"])
 
 
 if __name__ == "__main__":
