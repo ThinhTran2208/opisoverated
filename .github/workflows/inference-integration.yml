@@ -5,15 +5,28 @@ on:
     paths:
       - "src/calibration/**"
       - "src/inference/**"
+      - "src/detection/**"
+      - "src/vlm/**"
       - "src/diagnosis/**"
       - "src/scorer/**"
       - "artifacts/calibration/**"
       - "artifacts/checkpoints/**"
       - "configs/production_inference_v1.json"
+      - "configs/detection_rfdetr_fashionclip_core7_v1.json"
+      - "configs/vlm_qwen3_vl_4b_instruct_v1.json"
       - "tests/test_calibration.py"
       - "tests/test_production_inference.py"
+      - "tests/test_inference_adapters.py"
+      - "tests/test_full_image_integration.py"
+      - "tests/test_http_image_api.py"
+      - "tests/test_vlm_service_api.py"
       - "requirements-runtime.txt"
+      - "requirements-detection.txt"
+      - "requirements-vlm.txt"
       - "Dockerfile"
+      - "Dockerfile.inference-core"
+      - "Dockerfile.vlm"
+      - "docker-compose.gpu.yml"
       - ".dockerignore"
       - ".github/workflows/inference-integration.yml"
   push:
@@ -36,21 +49,29 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install runtime dependencies
+      - name: Install lightweight integration dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-runtime.txt
 
-      - name: Run calibration and production E2E tests
-        run: python -m unittest tests.test_calibration tests.test_production_inference -v
+      - name: Run production contract E2E tests
+        run: |
+          python -m unittest \
+            tests.test_calibration \
+            tests.test_inference_adapters \
+            tests.test_production_inference \
+            tests.test_full_image_integration \
+            tests.test_http_image_api \
+            tests.test_vlm_service_api \
+            -v
 
-      - name: Build deploy image
+      - name: Build lightweight precomputed deploy image
         run: docker build -t outfit-inference-v1 .
 
-      - name: Start deploy image
+      - name: Start lightweight deploy image
         run: docker run -d --name outfit-inference-v1 -p 8000:8000 outfit-inference-v1
 
-      - name: Health check
+      - name: Lightweight health check
         shell: bash
         run: |
           for attempt in {1..30}; do
@@ -62,6 +83,55 @@ jobs:
           docker logs outfit-inference-v1
           exit 1
 
-      - name: Container logs
+      - name: Lightweight container logs
         if: always()
         run: docker logs outfit-inference-v1 || true
+
+  split-runtime-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build inference-core image
+        run: docker build -f Dockerfile.inference-core -t outfit-inference-core-v1 .
+
+      - name: Build VLM image
+        run: docker build -f Dockerfile.vlm -t outfit-vlm-v1 .
+
+      - name: Start inference-core without model execution
+        run: |
+          docker run -d --name outfit-inference-core-v1 \
+            -e FASHION_INFERENCE_DEVICE=cpu \
+            -e FASHION_DETECTION_DEVICE=cpu \
+            -p 8010:8000 \
+            outfit-inference-core-v1
+
+      - name: Start lazy VLM service without model download
+        run: docker run -d --name outfit-vlm-v1 -p 8011:8001 outfit-vlm-v1
+
+      - name: Split service health checks
+        shell: bash
+        run: |
+          for port in 8010 8011; do
+            ready=0
+            for attempt in {1..45}; do
+              if curl --fail --silent "http://127.0.0.1:${port}/healthz"; then
+                ready=1
+                break
+              fi
+              sleep 2
+            done
+            if [ "$ready" -ne 1 ]; then
+              docker logs outfit-inference-core-v1 || true
+              docker logs outfit-vlm-v1 || true
+              exit 1
+            fi
+          done
+
+      - name: Split container logs
+        if: always()
+        run: |
+          docker logs outfit-inference-core-v1 || true
+          docker logs outfit-vlm-v1 || true
