@@ -55,6 +55,8 @@ class Evaluation3OverlapTests(unittest.TestCase):
         self.assertIn("drive.mount('/content/drive'", code)
         self.assertIn("DRIVE_ROOT / 'EVALUATION3'", code)
         self.assertIn("DRIVE_ROOT / 'scorer_ready_v2'", code)
+        self.assertIn("E3_ARCHIVE = E3_DIR / 'outfit.zip'", code)
+        self.assertIn("shutil.unpack_archive", code)
         self.assertIn("INPUTS_READY = not missing", code)
         self.assertNotIn("raise FileNotFoundError('Thiếu input", code)
 
