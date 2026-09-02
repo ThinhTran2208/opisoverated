@@ -52,6 +52,11 @@ class Evaluation3OverlapTests(unittest.TestCase):
         self.assertIn("feat/evaluation3-overlap-audit", code)
         self.assertIn("'clone', '--branch', BRANCH, '--single-branch'", code)
         self.assertIn("os.environ['FASHION_PROJECT_ROOT']", code)
+        self.assertIn("drive.mount('/content/drive'", code)
+        self.assertIn("DRIVE_ROOT / 'EVALUATION3'", code)
+        self.assertIn("DRIVE_ROOT / 'scorer_ready_v2'", code)
+        self.assertIn("INPUTS_READY = not missing", code)
+        self.assertNotIn("raise FileNotFoundError('Thiếu input", code)
 
     def test_annotation_tables_join_by_item(self):
         merged = merge_evaluation3_annotations(
