@@ -8,10 +8,21 @@ from PIL import Image, ImageDraw, ImageEnhance
 from src.evaluation.evaluation3_ecc_verifier import (
     DUPLICATE,
     MANUAL_REVIEW,
+    EccDecisionThresholds,
     aligned_pair_evidence,
     classify_aligned_pair,
 )
 from src.evaluation.evaluation3_rgb_verifier import normalize_rgb_for_verification
+
+
+# Trial values for the actual NB10D experiment. Global RGB/edge similarity is
+# intentionally more tolerant than the module's conservative defaults because
+# JPEG/re-encoding noise can depress those two scores. Auto-DUP still requires
+# low Lab color delta + low interior residual + low worst-patch residual.
+TRIAL_THRESHOLDS = EccDecisionThresholds(
+    auto_rgb_ssim_min=0.82,
+    auto_edge_ssim_min=0.72,
+)
 
 
 class Evaluation3EccVerifierTests(unittest.TestCase):
@@ -44,7 +55,10 @@ class Evaluation3EccVerifierTests(unittest.TestCase):
         left_array = normalize_rgb_for_verification(left, size=256)
         right_array = normalize_rgb_for_verification(right, size=256)
         evidence = aligned_pair_evidence(left_array, right_array)
-        decision, method = classify_aligned_pair(evidence)
+        decision, method = classify_aligned_pair(
+            evidence,
+            thresholds=TRIAL_THRESHOLDS,
+        )
         return evidence, decision, method
 
     def test_jpeg_and_small_brightness_nuisance_can_auto_duplicate(self):
