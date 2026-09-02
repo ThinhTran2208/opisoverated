@@ -1,4 +1,7 @@
 # EVALUATION3 external-evaluation and overlap-audit runtime.
 datasets>=2.19,<5
+numpy>=1.26,<3
 openpyxl>=3.1,<4
 Pillow>=10,<13
+scipy>=1.11,<2
+scikit-image>=0.22,<1
