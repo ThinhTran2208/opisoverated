@@ -1,0 +1,4 @@
+# EVALUATION3 external-evaluation and overlap-audit runtime.
+datasets>=2.19,<5
+openpyxl>=3.1,<4
+Pillow>=10,<13
