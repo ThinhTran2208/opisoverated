@@ -36,6 +36,23 @@ def make_image(path: Path, color: tuple[int, int, int], *, size=(40, 32)) -> Non
 
 
 class Evaluation3OverlapTests(unittest.TestCase):
+    def test_nb10_bootstraps_the_feature_branch_on_colab(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        notebook = json.loads(
+            (
+                repo_root
+                / "notebooks/experiments/NB10_evaluation3_overlap_audit.ipynb"
+            ).read_text(encoding="utf-8")
+        )
+        code = "\n".join(
+            "".join(cell.get("source", []))
+            for cell in notebook["cells"]
+            if cell.get("cell_type") == "code"
+        )
+        self.assertIn("feat/evaluation3-overlap-audit", code)
+        self.assertIn("'clone', '--branch', BRANCH, '--single-branch'", code)
+        self.assertIn("os.environ['FASHION_PROJECT_ROOT']", code)
+
     def test_annotation_tables_join_by_item(self):
         merged = merge_evaluation3_annotations(
             {"436320": {"cmt_raw": "3", "reason_raw": "1", "group": ""}},
