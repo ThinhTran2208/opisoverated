@@ -58,8 +58,10 @@ class Evaluation3ActiveLearningTests(unittest.TestCase):
         self.assertEqual(selected["e3_outfit_id"].nunique(), 5)
 
     def test_two_threshold_triage_keeps_middle_manual(self):
-        y = np.array([0, 0, 0, 0, 1, 1, 1, 1], dtype=int)
-        p = np.array([0.01, 0.02, 0.05, 0.25, 0.70, 0.90, 0.97, 0.99])
+        # Only the two extreme low/high regions are perfectly reliable; the
+        # intentionally mixed middle must remain MANUAL_REVIEW.
+        y = np.array([0, 0, 1, 0, 1, 0, 1, 1], dtype=int)
+        p = np.array([0.01, 0.05, 0.20, 0.40, 0.60, 0.80, 0.95, 0.99])
         thresholds = choose_triage_thresholds(
             y,
             p,
@@ -82,8 +84,10 @@ class Evaluation3ActiveLearningTests(unittest.TestCase):
             target_auto_non_npv=0.50,
             minimum_auto_examples=1,
         )
-        self.assertLess(thresholds.auto_non_max_probability,
-                        thresholds.auto_duplicate_min_probability)
+        self.assertLess(
+            thresholds.auto_non_max_probability,
+            thresholds.auto_duplicate_min_probability,
+        )
 
 
 if __name__ == "__main__":
