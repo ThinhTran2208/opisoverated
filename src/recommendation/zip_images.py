@@ -113,6 +113,28 @@ class ZipImageResolver:
             raise ValueError(f"Image entry is empty: {ref.internal_path}")
         return payload
 
+    def validate_readable(self, item_ids: Sequence[str]) -> dict[str, str]:
+        """Validate selected entries while opening each archive only once."""
+
+        grouped: dict[Path, list[ZipImageRef]] = {}
+        failures: dict[str, str] = {}
+        for item_id in dict.fromkeys(str(value) for value in item_ids):
+            try:
+                ref = self.resolve(item_id)
+            except Exception as error:
+                failures[item_id] = type(error).__name__
+                continue
+            grouped.setdefault(ref.archive_path, []).append(ref)
+        for archive_path, refs in grouped.items():
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                for ref in refs:
+                    try:
+                        if not archive.read(ref.internal_path):
+                            raise ValueError("empty image")
+                    except Exception as error:
+                        failures[ref.item_id] = type(error).__name__
+        return failures
+
     def media_type(self, item_id: str) -> str:
         ref = self.resolve(item_id)
         return mimetypes.guess_type(ref.internal_path)[0] or "image/jpeg"
@@ -133,4 +155,3 @@ class ZipImageResolver:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(self.read_bytes(item_id))
         return target
-

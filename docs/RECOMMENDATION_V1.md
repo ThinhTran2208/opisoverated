@@ -122,6 +122,22 @@ ranking score.
 
 ## Evaluation3
 
+Chạy evaluator độc lập (không train/tune trên test):
+
+```powershell
+.\.venv\Scripts\python.exe -m src.recommendation.evaluation `
+  --ml-zip D:\BKU\VSC\ML_Final-20260903T034319Z-1-001.zip `
+  --image-zip D:\BKU\VSC\images-20260903T034922Z-1-001.zip `
+  --image-zip D:\BKU\VSC\images-20260903T034922Z-1-002.zip `
+  --image-zip D:\BKU\VSC\images-20260903T034922Z-1-003.zip `
+  --split test --max-samples 0 --output-dir outputs
+```
+
+Evaluator ghi ba artifact nội bộ: `recommendation_candidate_records.jsonl`,
+`recommendation_evaluation_results.json`, và `recommendation_evaluation_report.md`.
+Trace giữ nguyên ranking của item-only, context-only, hybrid và scorer Top-3.
+Replacement Success Rate dùng epsilon cố định `0.0` trên compatibility logit.
+
 The ZIP entry `ML_Final/evaluation3/phash_ssim_threshold/` is empty. Therefore
 the executable Evaluation3 protocol is defined from the packaged
 `scorer_ready_v2_test.jsonl` one-item-swap pairs:
@@ -138,14 +154,19 @@ for final-rank quality because it remains informative beyond the public Top-3.
 
 Full Evaluation3 result:
 
-| Metric | Value |
+| Stage / Metric | Value |
 |---|---:|
-| Recall@50 | 0.039965620971207566 |
-| Recall@100 | 0.05801461108723679 |
-| Recall@200 | 0.08465835840137516 |
-| Hit@1 | 0.012462397937258273 |
-| Hit@3 | 0.024065320154705628 |
-| MRR | 0.022436943771935322 |
+| Item-only Recall@50 / @100 / @200 | 0.018908 / 0.030941 / 0.051998 |
+| Context-only Recall@50 / @100 / @200 | 0.021057 / 0.027503 / 0.033949 |
+| Hybrid pre-rerank Recall@50 / @100 / @200 | 0.064461 / 0.076923 / 0.084658 |
+| Hybrid + scorer Hit@1 / Hit@3 / MRR | 0.012462 / 0.024065 / 0.022437 |
+| Replacement Success Rate (epsilon=0.0) | 0.957354 |
+
+Coverage is 100% for embedding, metadata and image checks (11,857 required
+item checks). There are 2,327 valid queries and no excluded queries. Failure
+counts are: ground truth outside hybrid Top-200 = 2,130; inside hybrid but
+outside final Top-3 = 141; fewer than three final candidates = 59; image-read
+errors = 0; scorer errors = 0.
 
 The low retrieval recall is a measured limitation of applying exact
 `master_category` filtering after global Top-200 retrieval. It is not hidden by
@@ -182,4 +203,3 @@ the reranker metric.
 - ZIP access avoids extraction but startup still loads the 142,480-row
   embedding tensor and indexes all image filenames in memory.
 - Qwen/VLM Explanation is intentionally omitted.
-

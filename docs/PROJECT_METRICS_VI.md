@@ -139,6 +139,42 @@ Recommendation được đánh giá theo hai giai đoạn:
 
 Việc tách hai stage giúp xác định lỗi recommendation đến từ retrieval hay từ reranker.
 
+### Cơ chế đo trong Recommendation V1
+
+Evaluation3 dùng các negative one-item-swap. Với mỗi query, item tại
+`negative_metadata.swapped_item_index` là problematic item; ground truth là
+`negative_metadata.original_item_id`; `replacement_item_id` là item đang có
+trong negative outfit tại vị trí swap. Chỉ query có đủ embedding, metadata và
+ảnh của outfit cùng ground truth mới được đưa vào pipeline. Query bị loại được
+ghi riêng theo nguyên nhân, không âm thầm tính như một hit.
+
+Candidate trace giữ nguyên thứ tự ranking (không dùng set để xuất danh sách):
+item-only Top-200, context-only Top-200, hybrid union sau lọc tối đa 200 và
+final scorer ranking Top-3. Trace là artifact nội bộ JSONL, không đi qua public
+serializer.
+
+Ở retrieval, Recall@K được tính riêng cho item-only, context-only và hybrid
+pre-rerank với (Kin{50,100,200}). Rank của ground truth là vị trí đầu tiên
+của item trong đúng danh sách stage đó. Vì Evaluation3 hiện có đúng một
+ground-truth item/query nên Recall@K = Hit@K về giá trị số ở retrieval stage.
+
+Ở reranking, scorer thay problematic item trong negative outfit và xếp hạng
+tất cả candidate hybrid hợp lệ. Hit@1/Hit@3 dùng ranking sau scorer; MRR là
+(1/rank) nếu ground truth xuất hiện trong toàn bộ ranking sau scorer, bằng 0
+nếu không xuất hiện. Public response chỉ lấy ba phần tử đầu và không chứa score.
+
+Replacement Success Rate được tính trên từng recommendation trong final Top-3:
+
+\[
+\mathbf{1}[C(O^{(c)})-C(O)>\epsilon]
+\]
+
+Trong protocol hiện tại (C) là `compatibility_logit` nội bộ và
+(epsilon=0.0), cố định trước khi chạy test; không điều chỉnh epsilon để tối
+ưu kết quả. Báo cáo phải tách số query hợp lệ, query bị loại, thiếu embedding,
+thiếu metadata, thiếu ảnh, lỗi đọc ảnh, lỗi scorer, ground truth ngoài hybrid
+Top-200 và ground truth trong hybrid nhưng ngoài final Top-3.
+
 ---
 
 ## 2.1 Candidate Retrieval

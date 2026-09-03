@@ -15,6 +15,7 @@ from .pipeline import (
 )
 from .reranker import FROZEN_V5_SHA256, FrozenScorerReranker
 from .retrieval import HybridCandidate, HybridRetriever, RetrievalResult
+from .trace import CandidateTraceWriter, candidate_trace_record
 from .zip_artifacts import MLFinalZipBundle, TensorEmbeddingCatalog
 from .zip_images import ZipImageRef, ZipImageResolver
 
@@ -34,6 +35,8 @@ __all__ = [
     "RecommendationPipeline",
     "RecommendationResult",
     "RetrievalResult",
+    "CandidateTraceWriter",
+    "candidate_trace_record",
     "SearchHit",
     "TensorEmbeddingCatalog",
     "ZipImageRef",

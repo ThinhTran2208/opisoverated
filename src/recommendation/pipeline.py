@@ -22,6 +22,7 @@ from src.diagnosis.loo import diagnose_outfit
 from .metadata import ItemMetadataIndex
 from .retrieval import HybridRetriever, RetrievalResult
 from .reranker import FrozenScorerReranker, RerankedCandidate
+from .trace import CandidateTraceWriter, candidate_trace_record
 
 
 RECOMMENDATION_VERSION = "hybrid-retrieval-v1"
@@ -72,6 +73,7 @@ class RecommendationPipeline:
         top_k_problematic: int = 200,
         top_k_context: int = 200,
         final_k: int = 3,
+        trace_writer: CandidateTraceWriter | None = None,
     ) -> None:
         if final_k < 1:
             raise ValueError("final_k must be >= 1")
@@ -88,6 +90,7 @@ class RecommendationPipeline:
             top_k_context=top_k_context,
         )
         self.final_k = int(final_k)
+        self.trace_writer = trace_writer
 
     @classmethod
     def load_from_archives(
@@ -148,6 +151,7 @@ class RecommendationPipeline:
             top_k_problematic=int(config.get("top_k_problematic", 200)),
             top_k_context=int(config.get("top_k_context", 200)),
             final_k=int(config.get("final_k", 3)),
+            trace_writer=CandidateTraceWriter(),
         )
         pipeline.artifact_bundle = bundle
         pipeline.image_validation = image_validation
@@ -161,6 +165,9 @@ class RecommendationPipeline:
         outfit_category_ids: Sequence[int],
         problematic_index: int,
         loo_result: dict[str, object] | None = None,
+        query_id: str | None = None,
+        source_split: str | None = None,
+        ground_truth_item_id: str | None = None,
     ) -> RecommendationResult:
         if len(outfit_item_ids) != len(outfit_category_ids):
             raise ValueError("outfit item IDs and category IDs must align")
@@ -174,6 +181,29 @@ class RecommendationPipeline:
         )
         selected = reranked[: self.final_k]
         if len(selected) < self.final_k:
+            if self.trace_writer is not None:
+                self.trace_writer.append(
+                    candidate_trace_record(
+                        query_id=query_id or "runtime", source_split=source_split,
+                        problematic_item_index=problematic_index,
+                        problematic_item_id=str(outfit_item_ids[problematic_index]),
+                        ground_truth_item_id=ground_truth_item_id,
+                        replacement_item_id=str(outfit_item_ids[problematic_index]),
+                        item_ids=[row.item_id for row in retrieval.problematic_hits],
+                        context_ids=[row.item_id for row in retrieval.context_hits],
+                        hybrid_ids=[row.item_id for row in retrieval.candidates],
+                        final_ids=[row.item_id for row in selected],
+                        candidate_counts={"item_retrieval": retrieval.problematic_hit_count,
+                                          "context_retrieval": retrieval.context_hit_count,
+                                          "hybrid_top200": min(200, len(retrieval.candidates)),
+                                          "reranked": len(reranked), "final": len(selected)},
+                        excluded_counts={"master_category": retrieval.master_category_filtered_count,
+                                         "missing_metadata": retrieval.missing_metadata_count,
+                                         "missing_image": retrieval.missing_image_count,
+                                         "missing_embedding": retrieval.missing_embedding_count},
+                        failure_reason="fewer_than_three_final_candidates",
+                    )
+                )
             raise RuntimeError(
                 f"Only {len(selected)} eligible candidates remain; "
                 f"Recommendation V1 requires Top-{self.final_k}"
@@ -194,6 +224,34 @@ class RecommendationPipeline:
                     ),
                     master_category=master_category,
                     coarse_category=coarse_category,
+                )
+            )
+        if self.trace_writer is not None:
+            self.trace_writer.append(
+                candidate_trace_record(
+                    query_id=query_id or "runtime",
+                    source_split=source_split,
+                    problematic_item_index=problematic_index,
+                    problematic_item_id=str(outfit_item_ids[problematic_index]),
+                    ground_truth_item_id=ground_truth_item_id,
+                    replacement_item_id=str(outfit_item_ids[problematic_index]),
+                    item_ids=[row.item_id for row in retrieval.problematic_hits],
+                    context_ids=[row.item_id for row in retrieval.context_hits],
+                    hybrid_ids=[row.item_id for row in retrieval.candidates],
+                    final_ids=[row.item_id for row in selected],
+                    candidate_counts={
+                        "item_retrieval": retrieval.problematic_hit_count,
+                        "context_retrieval": retrieval.context_hit_count,
+                        "hybrid_top200": min(200, len(retrieval.candidates)),
+                        "reranked": len(reranked),
+                        "final": len(selected),
+                    },
+                    excluded_counts={
+                        "master_category": retrieval.master_category_filtered_count,
+                        "missing_metadata": retrieval.missing_metadata_count,
+                        "missing_image": retrieval.missing_image_count,
+                        "missing_embedding": retrieval.missing_embedding_count,
+                    },
                 )
             )
         return RecommendationResult(
