@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+from typing import Sequence
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageOps
@@ -22,8 +23,13 @@ from skimage.filters import sobel
 from skimage.metrics import structural_similarity
 
 from src.evaluation.evaluation3_active_learning import (
-    DUPLICATE, NON_DUPLICATE, VALID_LABELS,
+    DUPLICATE, NON_DUPLICATE,
     build_models, binary_metrics, choose_triage_thresholds,
+)
+
+SAME_PRODUCT_DIFFERENT_IMAGE = "SAME_PRODUCT_DIFFERENT_IMAGE"
+VALID_PREVIEW_LABELS = frozenset(
+    {DUPLICATE, NON_DUPLICATE, SAME_PRODUCT_DIFFERENT_IMAGE}
 )
 
 FEATURE_COLUMNS = (
@@ -160,7 +166,11 @@ def write_review_sheet(batch: pd.DataFrame, destination: Path | str) -> None:
     wb=Workbook(); ws=wb.active; ws.title="review"
     ws.append(["pair_id","preview_file","human_label"])
     for r in batch.itertuples(index=False): ws.append([str(r.pair_id),str(r.preview_file),""])
-    dv=DataValidation(type="list",formula1='"DUPLICATE,NON_DUPLICATE"',allow_blank=True)
+    dv=DataValidation(
+        type="list",
+        formula1='"DUPLICATE,SAME_PRODUCT_DIFFERENT_IMAGE,NON_DUPLICATE"',
+        allow_blank=True,
+    )
     ws.add_data_validation(dv)
     if len(batch): dv.add(f"C2:C{len(batch)+1}")
     ws.freeze_panes="A2"; ws.column_dimensions["A"].width=16; ws.column_dimensions["B"].width=90; ws.column_dimensions["C"].width=22
@@ -174,7 +184,7 @@ def read_labels(path: Path | str) -> dict[str,str]:
     out={}
     for r in df.itertuples(index=False):
         label=str(getattr(r,'human_label','')).strip().upper()
-        if label in VALID_LABELS: out[str(getattr(r,'pair_id')).strip()]=label
+        if label in VALID_PREVIEW_LABELS: out[str(getattr(r,'pair_id')).strip()]=label
     return out
 
 
@@ -182,7 +192,11 @@ def attach_labels(pool: pd.DataFrame, review_files) -> pd.DataFrame:
     labels={}
     for f in review_files: labels.update(read_labels(f))
     out=pool.copy(); out["human_label"]=out["pair_id"].map(labels).fillna("")
-    out["target"]=out["human_label"].map({NON_DUPLICATE:0,DUPLICATE:1})
+    out["target"]=out["human_label"].map({
+        NON_DUPLICATE: 0,
+        DUPLICATE: 1,
+        SAME_PRODUCT_DIFFERENT_IMAGE: 1,
+    })
     return out
 
 
@@ -190,12 +204,38 @@ def xframe(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[:, FEATURE_COLUMNS].astype(float)
 
 
-def fit_models(train: pd.DataFrame, validation: pd.DataFrame, random_state: int=42):
+def fit_models(
+    train: pd.DataFrame,
+    validation: pd.DataFrame,
+    random_state: int = 42,
+    *,
+    sample_weight: Sequence[float] | None = None,
+):
+    """Fit the preview baselines, optionally with per-row training weights.
+
+    Historical confirmed positives are much easier than the current manual
+    queue.  Supporting row weights lets callers keep those positives as useful
+    anchors without allowing that source to dominate the decision boundary.
+    """
+
     models=build_models(random_state); rows=[]
     Xtr=xframe(train); ytr=train.target.astype(int).to_numpy(); Xv=xframe(validation); yv=validation.target.astype(int).to_numpy()
+    weights = None
+    if sample_weight is not None:
+        weights = np.asarray(sample_weight, dtype=float)
+        if weights.shape != (len(train),):
+            raise ValueError("sample_weight must contain exactly one value per train row")
+        if not np.isfinite(weights).all() or (weights <= 0).any():
+            raise ValueError("sample_weight values must be finite and > 0")
     fitted={}
     for name,m in models.items():
-        m.fit(Xtr,ytr); idx=list(m.classes_).index(1); p=m.predict_proba(Xv)[:,idx]
+        if weights is None:
+            m.fit(Xtr,ytr)
+        elif hasattr(m, "named_steps"):
+            m.fit(Xtr, ytr, model__sample_weight=weights)
+        else:
+            m.fit(Xtr, ytr, sample_weight=weights)
+        idx=list(m.classes_).index(1); p=m.predict_proba(Xv)[:,idx]
         rows.append({"model":name,**binary_metrics(yv,p)}); fitted[name]=m
     report=pd.DataFrame(rows).sort_values(["roc_auc","balanced_accuracy@0.5"],ascending=False).reset_index(drop=True)
     return fitted, report
@@ -206,3 +246,71 @@ def select_uncertain(model, unlabeled: pd.DataFrame, batch_size: int=40) -> pd.D
     idx=list(model.classes_).index(1); p=model.predict_proba(xframe(unlabeled))[:,idx]
     out=unlabeled.copy(); out["model_probability_duplicate"]=p; out["uncertainty"]=np.abs(p-0.5)
     return out.sort_values("uncertainty").head(batch_size).copy()
+
+
+def select_resolution_batch(
+    model,
+    pool_rows: pd.DataFrame,
+    *,
+    batch_size: int = 40,
+    group_column: str = "e3_outfit_id",
+    labeled_rows: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Select high-yield pairs for resolving the overlap audit.
+
+    Active-learning queries and production adjudication have different goals.
+    ``select_uncertain`` improves the classifier by asking about p≈0.5 rows.
+    This function instead tries to find one duplicate quickly for each unresolved
+    E3 group: it removes groups that already have a human-confirmed duplicate,
+    ranks the remaining pairs by P(DUPLICATE), and returns at most one pair per
+    group. If group metadata is unavailable, each pair is treated as its own
+    group rather than silently collapsing unrelated rows.
+    """
+
+    if pool_rows.empty or batch_size <= 0:
+        return pool_rows.iloc[0:0].copy()
+
+    pool = pool_rows.copy()
+    if "pair_id" not in pool.columns:
+        raise KeyError("pool_rows missing pair_id")
+    if group_column in pool.columns:
+        pool["_resolution_group"] = pool[group_column].astype(str)
+    else:
+        pool["_resolution_group"] = pool["pair_id"].astype(str)
+
+    resolved_groups: set[str] = set()
+    labeled_pair_ids: set[str] = set()
+    if labeled_rows is not None and not labeled_rows.empty:
+        labeled = labeled_rows.copy()
+        if "pair_id" in labeled.columns:
+            labeled_pair_ids = set(labeled["pair_id"].astype(str))
+        if group_column in labeled.columns:
+            if "target" in labeled.columns:
+                positive = pd.to_numeric(labeled["target"], errors="coerce").eq(1)
+            else:
+                labels = labeled.get(
+                    "human_label", pd.Series("", index=labeled.index)
+                ).astype(str).str.strip().str.upper()
+                positive = labels.isin({DUPLICATE, SAME_PRODUCT_DIFFERENT_IMAGE})
+            resolved_groups = set(
+                labeled.loc[positive, group_column].astype(str)
+            )
+
+    candidates = pool[
+        ~pool["pair_id"].astype(str).isin(labeled_pair_ids)
+        & ~pool["_resolution_group"].isin(resolved_groups)
+    ].copy()
+    if candidates.empty:
+        return candidates.drop(columns=["_resolution_group"])
+
+    idx = list(model.classes_).index(1)
+    probability = model.predict_proba(xframe(candidates))[:, idx]
+    candidates["model_probability_duplicate"] = probability
+    candidates = candidates.sort_values(
+        ["model_probability_duplicate", "pair_id"],
+        ascending=[False, True],
+    )
+    candidates = candidates.drop_duplicates(
+        subset=["_resolution_group"], keep="first"
+    ).head(int(batch_size))
+    return candidates.drop(columns=["_resolution_group"]).copy()
