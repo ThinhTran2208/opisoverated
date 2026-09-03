@@ -12,9 +12,11 @@ For this project, SAME_PRODUCT_DIFFERENT_IMAGE is treated as DUPLICATE because
 those examples were reviewed as the same visual item with only a very small
 lighting/viewpoint nuisance.
 
-The split is group-disjoint by EVALUATION3 relative image path. This prevents
-one E3 visual from leaking across train/validation/test through multiple
-Polyvore candidate pairs.
+The preferred split is both group-disjoint and source-aware. Easy positives
+from the historical confirmed queue are training anchors only; validation and
+test contain only hard-review rows. This prevents source provenance from
+inflating the held-out score and prevents one E3 visual from leaking across
+train/validation/test through multiple Polyvore candidate pairs.
 """
 from __future__ import annotations
 
@@ -31,6 +33,9 @@ from src.evaluation.evaluation3_preview_active_learning import extract_preview_f
 
 
 SAME_PRODUCT_DIFFERENT_IMAGE = "SAME_PRODUCT_DIFFERENT_IMAGE"
+CONFIRMED_DUPLICATE_SOURCE = "confirmed_duplicate"
+HARD_REVIEW_SOURCE = "hard_negative_review"
+CURRENT_DOMAIN_SOURCE = "current_active_learning"
 VALID_HISTORICAL_LABELS = frozenset(
     {DUPLICATE, NON_DUPLICATE, SAME_PRODUCT_DIFFERENT_IMAGE}
 )
@@ -82,7 +87,7 @@ def prepare_historical_metadata(
     positive = positive.drop_duplicates(subset=["eval3_rel_path"], keep="first")
     positive = positive.drop_duplicates(subset=["eval3_phash_hex"], keep="first")
     positive["human_label"] = DUPLICATE
-    positive["source"] = "confirmed_duplicate"
+    positive["source"] = CONFIRMED_DUPLICATE_SOURCE
 
     hard_key = pd.read_csv(hard_key_csv).copy()
     if "pair_id" not in hard_review_labels.columns or "human_label" not in hard_review_labels.columns:
@@ -100,7 +105,7 @@ def prepare_historical_metadata(
         how="inner",
         validate="one_to_one",
     )
-    hard["source"] = "hard_negative_review"
+    hard["source"] = HARD_REVIEW_SOURCE
 
     keep = [
         "pair_id",
@@ -273,6 +278,105 @@ def split_historical_dataset(
         raise AssertionError("validation/test group leakage")
 
     return train, validation, test
+
+
+def split_historical_domain_aware(
+    frame: pd.DataFrame,
+    *,
+    random_state: int = 42,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Create an honest historical split for the current near-duplicate task.
+
+    The confirmed queue is almost entirely easy positives, while the hard
+    review queue contains both classes. A random split of their union lets a
+    model exploit source-specific feature distributions and makes the held-out
+    result look unrealistically good. Instead:
+
+    * choose validation and test groups only from human-labeled hard rows;
+    * remove every matching E3 group, including its easy positive anchor, from
+      training; and
+    * keep all remaining rows available for training.
+
+    Validation/test are roughly 20% each of the hard-review rows. The returned
+    frames are fully group-disjoint.
+    """
+
+    required = {"source", "target", "group_id"}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise KeyError(f"historical feature frame missing {missing}")
+
+    hard = frame[frame["source"].eq(HARD_REVIEW_SOURCE)].copy().reset_index(drop=True)
+    if hard.empty:
+        raise ValueError("No hard_negative_review rows are available")
+    if hard["target"].nunique() < 2:
+        raise ValueError("hard_negative_review rows need both classes")
+    if hard["group_id"].nunique() < 5:
+        raise ValueError("Need at least five hard-review groups for a 60/20/20 split")
+
+    remain_idx, test_idx = _best_group_fold(
+        hard, n_splits=5, random_state=random_state
+    )
+    remain = hard.iloc[remain_idx].reset_index(drop=True)
+    test = hard.iloc[test_idx].reset_index(drop=True)
+
+    if remain["group_id"].nunique() < 4:
+        raise ValueError("Need at least four remaining hard-review groups for validation")
+    _, validation_idx = _best_group_fold(
+        remain, n_splits=4, random_state=random_state + 1
+    )
+    validation = remain.iloc[validation_idx].reset_index(drop=True)
+
+    reserved_groups = set(validation["group_id"].astype(str)) | set(
+        test["group_id"].astype(str)
+    )
+    train = frame[
+        ~frame["group_id"].astype(str).isin(reserved_groups)
+    ].copy().reset_index(drop=True)
+
+    sets = {
+        "train": set(train["group_id"].astype(str)),
+        "validation": set(validation["group_id"].astype(str)),
+        "test": set(test["group_id"].astype(str)),
+    }
+    if sets["train"] & sets["validation"]:
+        raise AssertionError("train/validation group leakage")
+    if sets["train"] & sets["test"]:
+        raise AssertionError("train/test group leakage")
+    if sets["validation"] & sets["test"]:
+        raise AssertionError("validation/test group leakage")
+    if not validation["source"].eq(HARD_REVIEW_SOURCE).all():
+        raise AssertionError("validation must contain hard-review rows only")
+    if not test["source"].eq(HARD_REVIEW_SOURCE).all():
+        raise AssertionError("test must contain hard-review rows only")
+
+    return train, validation, test
+
+
+def historical_training_weights(
+    frame: pd.DataFrame,
+    *,
+    confirmed_duplicate_weight: float = 0.25,
+    hard_review_weight: float = 1.0,
+    current_domain_weight: float = 4.0,
+) -> np.ndarray:
+    """Return source weights that prioritize hard/current human labels.
+
+    The defaults retain easy confirmed positives as anchors, give full weight
+    to the old hard-review queue, and emphasize freshly labeled active-learning
+    rows. Unknown sources receive weight 1.0.
+    """
+
+    values = {
+        CONFIRMED_DUPLICATE_SOURCE: float(confirmed_duplicate_weight),
+        HARD_REVIEW_SOURCE: float(hard_review_weight),
+        CURRENT_DOMAIN_SOURCE: float(current_domain_weight),
+    }
+    if any(not np.isfinite(value) or value <= 0 for value in values.values()):
+        raise ValueError("all source weights must be finite and > 0")
+    if "source" not in frame.columns:
+        raise KeyError("training frame missing source")
+    return frame["source"].map(values).fillna(1.0).astype(float).to_numpy()
 
 
 def split_summary(*frames: tuple[str, pd.DataFrame]) -> pd.DataFrame:
