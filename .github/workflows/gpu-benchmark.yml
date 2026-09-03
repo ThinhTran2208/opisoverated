@@ -1,0 +1,81 @@
+name: Production GPU benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_path:
+        description: Repository image path used for the benchmark
+        required: true
+        default: tests/animage.jpg
+      warmup_runs:
+        description: Warmup iterations
+        required: true
+        default: "2"
+      measured_runs:
+        description: Measured iterations
+        required: true
+        default: "10"
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    # The deploy environment must register a runner with the `gpu` label.
+    runs-on: [self-hosted, linux, x64, gpu]
+    timeout-minutes: 120
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify deploy GPU
+        run: nvidia-smi
+
+      - name: Build split runtime images
+        run: |
+          docker build -f Dockerfile.inference-core -t outfit-inference-core-v1 .
+          docker build -f Dockerfile.vlm -t outfit-vlm-v1 .
+
+      - name: Start VLM service on deploy GPU
+        run: |
+          docker network create outfit-benchmark || true
+          docker run -d --rm \
+            --name outfit-vlm-benchmark \
+            --network outfit-benchmark \
+            --gpus all \
+            outfit-vlm-v1
+
+      - name: Wait for lazy VLM service
+        run: |
+          docker run --rm --network outfit-benchmark curlimages/curl:8.10.1 \
+            --retry 30 --retry-delay 2 --retry-connrefused \
+            http://outfit-vlm-benchmark:8001/healthz
+
+      - name: Run full image pipeline benchmark
+        run: |
+          mkdir -p benchmark-results
+          docker run --rm \
+            --network outfit-benchmark \
+            --gpus all \
+            -v "$PWD/benchmark-results:/results" \
+            outfit-inference-core-v1 \
+            python -m src.inference.benchmark \
+              --image "/app/${{ inputs.image_path }}" \
+              --device cuda \
+              --warmup-runs "${{ inputs.warmup_runs }}" \
+              --runs "${{ inputs.measured_runs }}" \
+              --vlm-service-url http://outfit-vlm-benchmark:8001 \
+              --require-cuda \
+              --require-vlm \
+              --output /results/production_gpu_benchmark.json
+
+      - name: Upload benchmark report
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-gpu-benchmark
+          path: benchmark-results/production_gpu_benchmark.json
+          if-no-files-found: error
+
+      - name: VLM logs
+        if: always()
+        run: docker logs outfit-vlm-benchmark || true

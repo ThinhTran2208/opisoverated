@@ -1,0 +1,37 @@
+services:
+  inference-core:
+    build:
+      context: .
+      dockerfile: Dockerfile.inference-core
+    environment:
+      FASHION_INFERENCE_DEVICE: ${FASHION_INFERENCE_DEVICE:-cuda}
+      FASHION_DETECTION_DEVICE: ${FASHION_DETECTION_DEVICE:-cuda}
+      FASHION_VLM_SERVICE_URL: http://vlm:8001
+      FASHION_REQUIRE_VLM: "true"
+      FASHION_VLM_TIMEOUT_SECONDS: ${FASHION_VLM_TIMEOUT_SECONDS:-180}
+    ports:
+      - "8000:8000"
+    depends_on:
+      vlm:
+        condition: service_healthy
+    gpus: all
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  vlm:
+    build:
+      context: .
+      dockerfile: Dockerfile.vlm
+    environment:
+      FASHION_VLM_CONFIG: /app/configs/vlm_qwen3_vl_4b_instruct_v1.json
+    ports:
+      - "8001:8001"
+    gpus: all
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/healthz', timeout=5)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
