@@ -229,25 +229,24 @@ Project chọn dùng **Recall@K** vì các paper retrieval thường sử dụng
 
 Sau retrieval, compatibility scorer đánh giá từng candidate replacement trong context của toàn bộ outfit và rerank lại danh sách.
 
-### Primary metric: Recall@5
+### Primary metric cho Recommendation V1: Hit@3
 
-Recall@5 đo xem ground-truth item có nằm trong 5 recommendation cuối hay không.
+Hit@3 đo xem ground-truth item có nằm trong 3 recommendation public cuối hay không.
 
 Đây là metric chính của reranking vì hệ thống cuối cùng dự kiến chỉ hiển thị một số lượng nhỏ recommendation cho người dùng.
 
-Do đó Recall@5 trực tiếp trả lời:
+Do đó Hit@3 trực tiếp trả lời:
 
 > Ground-truth replacement có sống sót qua cả retrieval lẫn scorer reranking và xuất hiện trong shortlist cuối hay không?
 
 ---
 
-### Secondary metrics: Recall@1, Recall@3, Recall@10
+### Secondary metrics cho Recommendation V1: Hit@1 và MRR
 
 Các metric này dùng để phân tích chi tiết hơn chất lượng ranking:
 
-- **Recall@1**: ground-truth item có đứng đầu danh sách hay không.
-- **Recall@3**: ground-truth item có nằm trong Top-3 hay không.
-- **Recall@10**: ground-truth item có được scorer đưa lên vùng đầu danh sách hay không, ngay cả khi chưa vào Top-5.
+- **Hit@1**: ground-truth item có đứng đầu danh sách hay không.
+- **MRR**: phản ánh vị trí reciprocal rank của ground-truth trong toàn bộ candidate đã rerank.
 
 Nhìn đồng thời các giá trị này giúp đánh giá quality của ranking thay vì chỉ nhìn một cutoff duy nhất.
 
@@ -433,8 +432,8 @@ Vì vậy, nếu **LOO Top-1 và LOO Hit@2 chênh lệch quá lớn**, diagnosis
 | | Secondary | Mean logit margin, Median logit margin, F1-score |
 | **Recommendation — Retrieval** | Primary | Recall@200 |
 | | Secondary | Recall@100, Recall@50 |
-| **Recommendation — Reranking** | Primary | Recall@5 |
-| | Secondary | Recall@1, Recall@3, Recall@10, Replacement Success Rate |
+| **Recommendation — Reranking V1** | Primary | Hit@3 |
+| | Secondary | Hit@1, MRR |
 | **Diagnosis** | Primary | LOO Top-1 Localization Accuracy |
 | | Secondary | LOO Hit@2 |
 

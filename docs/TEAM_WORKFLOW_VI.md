@@ -57,7 +57,7 @@ Metrics:
 - Scorer: ROC-AUC, 2-way FITB.
 - Diagnosis: LOO Top-1 Localization Accuracy, LOO Hit@2.
 - Retrieval: Recall@200 là chính.
-- Rerank: Recall@5 là chính.
+- Rerank V1: Hit@3 là chính; Hit@1 và MRR là secondary.
 
 ### Assistant 3 — Detection + VLM
 
@@ -207,7 +207,7 @@ problem item
 → filter candidate
 → retrieve Top-200
 → scorer rerank
-→ Top-5
+→ Top-3
 ```
 
 Đánh giá retrieval:
@@ -216,10 +216,9 @@ problem item
 - Recall@50.
 
 Đánh giá rerank:
-- Recall@5;
-- Recall@1;
-- Recall@3;
-- Recall@10;
+- Hit@3;
+- Hit@1;
+- MRR;
 - Replacement Success Rate.
 
 ---
