@@ -32,7 +32,7 @@ The VLM pipeline intentionally keeps two different presentation layers.
 ### Internal/debug layer
 
 `render_explanation_vi_v2(...)` and `run["handoff"]` preserve implementation
-metadata useful for debugging, integration, and audit.  They may contain scorer
+metadata useful for debugging, integration, and audit. They may contain scorer
 or LOO terminology and should not be shown directly to a normal user.
 
 ### End-user layer
@@ -56,37 +56,47 @@ user_result = render_user_facing_vi_v2(
 
 The result schema is `vlm-user-facing-v2` and contains:
 
-- the problematic item index, ID, category, headline, and plain-language reason;
-- a short sentence telling the user to replace that item;
+- one final plain-language `text` string suitable for direct display;
+- the problematic item identity/category and structured copy for UI layout;
 - exactly three authoritative replacement candidates in frozen rank order;
+- a safe display name derived from coarse category, e.g. `Mẫu túi 1`, `Mẫu túi 2`, `Mẫu túi 3`;
 - one concise visual reason for each candidate;
-- a plain-language caution when visual evidence and the compatibility decision do
-  not fully agree.
+- a plain-language caution when visual evidence and the compatibility decision do not fully agree.
 
-Raw `compatibility_logit`, `improvement_logit`, score summaries, model names, and
-internal validation details are intentionally absent from this user-facing
-payload.
+The candidate `item_id` and `rank` stay in the machine payload only so the frontend can bind the correct recommendation image. The renderer does not ask Qwen to invent a specific subtype such as shoulder bag vs backpack; the displayed image is the source of truth for the exact visual item.
 
-Example shape:
+Raw `compatibility_logit`, `improvement_logit`, score summaries, model names, and internal validation details are intentionally absent from `vlm-user-facing-v2`. They may remain in internal/debug artifacts and must not be rendered to the end user.
+
+Example final text:
 
 ```text
-Item 3 (túi) là món đồ có vấn đề nhất trong outfit.
-Bạn nên thử thay Item 3 (túi) bằng một trong ba gợi ý bên dưới.
-
-Gợi ý 1: thay Item 3 bằng món này.
-→ Màu sắc hài hòa với các món còn lại.
-
-Gợi ý 2: thay Item 3 bằng món này.
-→ Hình ảnh chưa cho thấy ưu điểm thị giác đủ rõ.
-
-Gợi ý 3: thay Item 3 bằng món này.
-→ Phom dáng giúp outfit cân đối hơn.
+Chiếc túi hiện tại được hệ thống đánh giá là món kém phù hợp nhất với outfit.
+Tuy nhiên, khi nhìn riêng về mặt thị giác, món này không có dấu hiệu lệch outfit quá rõ.
+Bạn có thể thử thay món này bằng một trong ba mẫu túi bên dưới để outfit hài hòa hơn.
+Mẫu túi 1 phù hợp về mặt thị giác vì màu sắc hài hòa với các món còn lại.
+Mẫu túi 2 chưa cho thấy ưu điểm thị giác đủ rõ để nổi bật hơn các lựa chọn còn lại.
+Mẫu túi 3 phù hợp về mặt thị giác vì phom dáng giúp outfit cân đối hơn.
 ```
 
 A visual contradiction never changes the upstream diagnosis or recommendation
-rank.  The user-facing renderer instead phrases disagreement as uncertainty, for
+rank. The user-facing renderer instead phrases disagreement as uncertainty, for
 example that the image itself does not show an obvious mismatch and the result
 should be treated as a suggestion rather than a certain conclusion.
+
+## Frontend image binding
+
+Recommendation images are a frontend/deploy responsibility. The frontend should
+bind each image using the authoritative candidate `item_id` and `rank` from the
+same Recommendation V2 result. The visible card can therefore show, for example:
+
+```text
+[Mẫu túi 1 image]
+Mẫu túi 1
+Màu sắc hài hòa với các món còn lại.
+```
+
+The VLM does not generate recommendation images and does not change candidate
+identity or order.
 
 ## End-to-end VLM V2 wrapper
 
@@ -110,7 +120,7 @@ position, to prevent accidental rank/image mismatch.
 
 The wrapper performs one allowed repair retry and returns the internal
 `vlm-run-v2` record containing evidence hash, validated visual analysis,
-deterministic internal explanation, and the existing integration handoff.  For
+deterministic internal explanation, and the existing integration handoff. For
 end-user UI, render `vlm-user-facing-v2` from the validated `visual_analysis` and
 `evidence` as shown above.
 
@@ -126,12 +136,12 @@ V2 uses `configs/vlm_qwen3_vl_4b_instruct_v2.json` with:
 - a V2 generation budget sized for diagnosis plus three recommendation rows.
 
 T4 notebook runs may use a lower per-image pixel budget as a functional-test
-override.  That override is not the canonical deploy configuration.
+override. That override is not the canonical deploy configuration.
 
 ## Verification status
 
 Real Qwen execution has successfully passed the V2 prompt, validator, renderer,
-and Recommendation Top-3 grounding on NB10.  The user-facing renderer is a
+and Recommendation Top-3 grounding on NB10. The user-facing renderer is a
 separate deterministic layer and does not require another Qwen generation to
 render an already validated run.
 
