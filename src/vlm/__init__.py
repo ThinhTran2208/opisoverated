@@ -6,6 +6,7 @@ from .pipeline import (
     render_explanation_vi,
     validate_visual_analysis,
 )
+from .pipeline_v2 import validate_visual_analysis_v2
 from .prompt_v2 import (
     VISUAL_ANALYSIS_SCHEMA_VERSION_V2,
     append_repair_request_v2,
@@ -52,4 +53,5 @@ __all__ = [
     "validate_vlm_evidence",
     "validate_vlm_evidence_v2",
     "validate_visual_analysis",
+    "validate_visual_analysis_v2",
 ]
