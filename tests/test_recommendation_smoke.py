@@ -30,7 +30,7 @@ class RecommendationHostDataSmokeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.pipeline = RecommendationPipeline.load_from_archives(
-            REPO_ROOT / "configs" / "recommendation_hybrid_v1.json",
+            REPO_ROOT / "configs" / "recommendation_category_aware_v2.json",
             ml_zip_path=ML_ZIP,
             image_zip_paths=IMAGE_ZIPS,
             device="cpu",
@@ -46,6 +46,7 @@ class RecommendationHostDataSmokeTests(unittest.TestCase):
         records = self.pipeline.artifact_bundle.load_scorer_ready("test")
         _, result = _fixture_result(self.pipeline, records)
         public = result.to_public_dict()
+        self.assertEqual(public["recommendation_version"], "category-aware-hybrid-v2")
         self.assertEqual(len(public["items"]), 3)
         self.assertNotIn("score", str(public).lower())
         self.assertNotIn("logit", str(public).lower())
