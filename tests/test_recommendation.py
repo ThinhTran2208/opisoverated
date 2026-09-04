@@ -190,8 +190,9 @@ class HybridRetrievalTests(unittest.TestCase):
         self.assertIn("compatibility_logit", result.internal_metadata["reranked_candidates"][0])
         self.assertEqual(
             result.internal_metadata["retrieval"]["retrieval_scope"],
-            "exact_master_category_before_cosine",
+            "exact_master_category",
         )
+        self.assertFalse(result.internal_metadata["retrieval"]["used_core7_fallback"])
 
 
 class MetadataTests(unittest.TestCase):
