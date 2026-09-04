@@ -1,6 +1,8 @@
 {
   "freeze_name": "recommendation-v2-rankdiag-freeze",
   "status": "FROZEN_FOR_REPORT",
+  "canonical_branch": "feat/recommendation-rank-diagnostics-v2",
+  "deprecated_experimental_branch": "feat/recommendation-conditional-hit-v2",
   "recommendation_version": "category-aware-hybrid-v2",
   "evaluation_protocol": "polyvore-one-item-swap-recovery-v2-rank-diagnostics",
   "evaluation_code_commit": "3472abf7a39ae9fc51683bcb19b5dcd3ac3e8ec4",
