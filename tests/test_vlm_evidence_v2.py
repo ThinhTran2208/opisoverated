@@ -141,7 +141,6 @@ class RecommendationEvidenceV2Tests(unittest.TestCase):
             recommendation["items"][0]["improvement_logit"], 1.2
         )
 
-        # V1 remains a separate frozen contract and still says not implemented.
         v1 = build_vlm_evidence(
             loo_fixture(),
             sample_id="demo-neg",
@@ -189,9 +188,7 @@ class RecommendationEvidenceV2Tests(unittest.TestCase):
     def test_rejects_candidate_already_in_outfit(self):
         recommendation = recommendation_fixture()
         recommendation["items"][0]["item_id"] = "top"
-        recommendation["internal_metadata"]["reranked_candidates"][0]["item_id"] = (
-            "top"
-        )
+        recommendation["internal_metadata"]["reranked_candidates"][0]["item_id"] = "top"
         with self.assertRaisesRegex(ValueError, "already be in the outfit"):
             build_evidence_from_recommendation(recommendation)
 
@@ -220,6 +217,20 @@ class RecommendationEvidenceV2Tests(unittest.TestCase):
     def test_rejects_evaluation_leakage_from_recommendation_source(self):
         recommendation = recommendation_fixture()
         recommendation["internal_metadata"]["ground_truth_item_id"] = "candidate-a"
+        with self.assertRaisesRegex(ValueError, "forbidden evaluation leakage"):
+            build_evidence_from_recommendation(recommendation)
+
+    def test_raw_mapping_top_level_evaluation_field_fails_before_projection(self):
+        recommendation = recommendation_fixture()
+        recommendation["original_item_id"] = "benchmark-original"
+        with self.assertRaisesRegex(ValueError, "forbidden evaluation leakage"):
+            build_evidence_from_recommendation(recommendation)
+
+    def test_raw_mapping_nested_evaluation_field_fails_before_projection(self):
+        recommendation = recommendation_fixture()
+        recommendation["adapter_metadata"] = {
+            "nested": {"hit_at_3": True},
+        }
         with self.assertRaisesRegex(ValueError, "forbidden evaluation leakage"):
             build_evidence_from_recommendation(recommendation)
 
