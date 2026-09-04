@@ -39,8 +39,8 @@ labels for QA. Those labels are not a user-facing vote on the upstream result.
 `ambiguous` or `contradicts_*` never authorizes the VLM to remove a candidate,
 change rank, or replace the diagnosed item.
 
-Prompt policy now asks Qwen to first seek one concrete positive visible relation
-for each recommendation candidate. If no clear positive reason is visible, Qwen
+Prompt policy asks Qwen to first seek one concrete positive visible relation for
+each recommendation candidate. If no clear positive reason is visible, Qwen
 should return `ambiguous` with no filler observations rather than inventing a
 justification or producing weak negative commentary. Clear contradictions remain
 available only as internal QA evidence.
@@ -82,17 +82,15 @@ Qwen, logits, validator names, and raw confidence taxonomy. Raw
 `compatibility_logit`, `improvement_logit`, and score summaries are absent from
 `vlm-user-facing-v2`.
 
-Internal visual disagreement is also not surfaced as a counter-argument to the
-user. If Qwen marks a recommendation `ambiguous` or `contradicts_recommendation`,
-the renderer does not say that the recommendation is weak or that the system
-disagrees with itself. It keeps the authoritative recommendation and simply
-omits an unsupported visual justification.
+Internal visual disagreement is not surfaced as a counter-argument to the user.
+If Qwen marks a diagnosis or recommendation `ambiguous`/`contradicts_*`, the
+renderer simply omits unsupported visual explanation. It never tells the user
+that the system is arguing with itself.
 
 Example for a case where all three candidate improvement logits are positive:
 
 ```text
 Chiếc túi hiện tại là món được đánh giá kém phù hợp nhất và được ưu tiên thay trong outfit.
-Đây là món được ưu tiên thay để cải thiện độ phù hợp tổng thể của outfit.
 Cả ba mẫu túi bên dưới đều được đánh giá phù hợp hơn khi thay cho chiếc túi hiện tại.
 Mẫu túi 1 là lựa chọn được xếp hạng đầu tiên; màu sắc phối hợp tốt với các món còn lại.
 Mẫu túi 2 là phương án thay thế thứ hai và được đánh giá phù hợp hơn chiếc túi hiện tại.
