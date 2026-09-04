@@ -114,7 +114,7 @@ def config_fixture(*, include_raw_response=True):
             "image_patch_size": 16,
         },
         "generation": {
-            "max_new_tokens": 768,
+            "max_new_tokens": 1024,
             "do_sample": False,
             "num_beams": 1,
             "repetition_penalty": 1.05,
@@ -240,7 +240,7 @@ class VlmPipelineV2Tests(unittest.TestCase):
         normalized = validate_vlm_config_v2(config_fixture())
         self.assertEqual(normalized["protocol_version"], VLM_PROTOCOL_VERSION_V2)
         self.assertEqual(normalized["vision"]["max_pixels"], 262144)
-        self.assertEqual(normalized["generation"]["max_new_tokens"], 768)
+        self.assertEqual(normalized["generation"]["max_new_tokens"], 1024)
         self.assertEqual(normalized["generation"]["max_validation_retries"], 1)
 
         wrong = config_fixture()
