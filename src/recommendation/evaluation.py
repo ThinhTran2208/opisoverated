@@ -166,6 +166,7 @@ class Evaluation3Evaluator:
             "score_type": "compatibility_logit", "total_queries": len(negatives),
             "valid_queries": evaluated, "excluded_queries": len(negatives) - evaluated,
             "is_full_split": max_samples is None,
+            "image_catalog_validation": getattr(self.pipeline, "image_validation", None),
             "coverage": {**dict(coverage),
                 "embedding_ratio": coverage["embedding_available"] / checks if checks else 0.0,
                 "metadata_ratio": coverage["metadata_available"] / checks if checks else 0.0,
@@ -195,6 +196,7 @@ def report_markdown(result: Mapping[str, object]) -> str:
         f"- Tổng query: {result['total_queries']}", f"- Query hợp lệ: {result['valid_queries']}",
         f"- Query bị loại: {result['excluded_queries']}",
         f"- Replacement Success Rate: {f(result['replacement_quality']['success_rate'])}",
+        f"- Image catalog: `{json.dumps(result.get('image_catalog_validation'), ensure_ascii=False)}`",
         f"- Coverage: `{json.dumps(result['coverage'], ensure_ascii=False)}`",
         f"- Excluded: `{json.dumps(result['excluded'], ensure_ascii=False)}`",
         f"- Failures: `{json.dumps(result['failures'], ensure_ascii=False)}`", "",
@@ -203,15 +205,40 @@ def report_markdown(result: Mapping[str, object]) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Recommendation V2 one-item-swap recovery evaluation")
-    parser.add_argument("--ml-zip", required=True)
-    parser.add_argument("--image-zip", action="append", required=True)
+    parser.add_argument("--artifact-root", help="Path to ML_Final directory")
+    parser.add_argument("--image-root", help="Path to item-image directory")
+    parser.add_argument("--ml-zip", help="Legacy ML_Final ZIP path")
+    parser.add_argument("--image-zip", action="append", help="Legacy image ZIP; may be repeated")
     parser.add_argument("--config", default=str(Path(__file__).resolve().parents[2] / "configs" / "recommendation_category_aware_v2.json"))
     parser.add_argument("--split", choices=("valid", "test"), default="test")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--output-dir", default="outputs")
     args = parser.parse_args()
-    pipeline = RecommendationPipeline.load_from_archives(args.config, ml_zip_path=args.ml_zip, image_zip_paths=args.image_zip, device=args.device)
+
+    using_directories = bool(args.artifact_root or args.image_root)
+    using_archives = bool(args.ml_zip or args.image_zip)
+    if using_directories and using_archives:
+        parser.error("Choose directory mode OR ZIP mode, not both")
+    if using_directories:
+        if not args.artifact_root or not args.image_root:
+            parser.error("Directory mode requires both --artifact-root and --image-root")
+        pipeline = RecommendationPipeline.load_from_directories(
+            args.config,
+            artifact_root=args.artifact_root,
+            image_root=args.image_root,
+            device=args.device,
+        )
+    else:
+        if not args.ml_zip or not args.image_zip:
+            parser.error("ZIP mode requires --ml-zip and at least one --image-zip")
+        pipeline = RecommendationPipeline.load_from_archives(
+            args.config,
+            ml_zip_path=args.ml_zip,
+            image_zip_paths=args.image_zip,
+            device=args.device,
+        )
+
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
     trace_path = out / "recommendation_candidate_records.jsonl"
