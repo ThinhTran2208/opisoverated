@@ -132,8 +132,10 @@ def _normalize_recommendation_image_refs(
         raise TypeError(
             "recommendation_image_refs must be a mapping keyed by candidate item_id"
         )
+    if any(not isinstance(key, str) for key in recommendation_image_refs):
+        raise TypeError("recommendation_image_refs keys must be candidate item_id strings")
     candidate_ids = [str(row["item_id"]) for row in evidence["recommendation"]["items"]]
-    supplied_keys = {str(key) for key in recommendation_image_refs}
+    supplied_keys = set(recommendation_image_refs)
     expected_keys = set(candidate_ids)
     if supplied_keys != expected_keys:
         missing = sorted(expected_keys - supplied_keys)
