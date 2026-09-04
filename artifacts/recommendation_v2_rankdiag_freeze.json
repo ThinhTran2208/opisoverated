@@ -1,0 +1,145 @@
+{
+  "freeze_name": "recommendation-v2-rankdiag-freeze",
+  "status": "FROZEN_FOR_REPORT",
+  "recommendation_version": "category-aware-hybrid-v2",
+  "evaluation_protocol": "polyvore-one-item-swap-recovery-v2-rank-diagnostics",
+  "evaluation_code_commit": "3472abf7a39ae9fc51683bcb19b5dcd3ac3e8ec4",
+  "benchmark": {
+    "type": "polyvore_synthetic_one_item_swap_recovery",
+    "ground_truth_definition": "negative_metadata.original_item_id",
+    "problematic_index_source": "negative_metadata.swapped_item_index",
+    "ground_truth_is_unique_valid_replacement": false
+  },
+  "algorithm": {
+    "retrieval_scope": "exact_master_category_before_cosine",
+    "runtime_fallback": "core7_when_master_category_unavailable",
+    "top_k_problematic": 200,
+    "top_k_context": 200,
+    "final_k": 3,
+    "embedding_version": "fashionclip-512-l2-v1",
+    "scorer_version": "type_aware_pairwise_v1",
+    "scorer_checkpoint_sha256": "7b3d0b6e0d44e3de517565f5725ded198bbc762b02a4dece26a58ee145cfed9c"
+  },
+  "reporting_policy": {
+    "primary_retrieval_metrics": [
+      "hybrid_recall_at_200",
+      "full_union_gt_coverage"
+    ],
+    "secondary_reranking_metrics": [
+      "gt_rank_improved_ratio",
+      "gt_rank_worsened_ratio",
+      "median_rank_change"
+    ],
+    "diagnostic_only": [
+      "replacement_success_rate",
+      "conditional_mrr_before",
+      "conditional_mrr_after",
+      "conditional_mrr_gain"
+    ],
+    "omit_from_main_report": [
+      "unconditional_hit_at_1",
+      "unconditional_hit_at_3",
+      "unconditional_mrr",
+      "conditional_hit_at_3",
+      "conditional_mrr_before",
+      "conditional_mrr_after",
+      "conditional_mrr_gain"
+    ]
+  },
+  "validation": {
+    "split": "valid",
+    "valid_queries": 1142,
+    "excluded_queries": 0,
+    "retrieval": {
+      "item_only": {
+        "recall_at_50": 0.047285,
+        "recall_at_100": 0.081436,
+        "recall_at_200": 0.147986
+      },
+      "context_only": {
+        "recall_at_50": 0.205779,
+        "recall_at_100": 0.272329,
+        "recall_at_200": 0.368651
+      },
+      "hybrid": {
+        "recall_at_50": 0.150613,
+        "recall_at_100": 0.226795,
+        "recall_at_200": 0.317863
+      },
+      "full_union_gt_count": 467,
+      "full_union_gt_coverage": 0.408932
+    },
+    "reranking": {
+      "eligible_queries": 467,
+      "gt_rank_improved_count": 282,
+      "gt_rank_improved_ratio": 0.603854,
+      "gt_rank_unchanged_count": 7,
+      "gt_rank_unchanged_ratio": 0.014989,
+      "gt_rank_worsened_count": 178,
+      "gt_rank_worsened_ratio": 0.381156,
+      "mean_rank_change": 35.233405,
+      "median_rank_change": 16.0,
+      "conditional_mrr_before": 0.086268,
+      "conditional_mrr_after": 0.098178,
+      "conditional_mrr_gain": 0.011910
+    },
+    "replacement_success_rate": 0.993579,
+    "runtime_errors": {
+      "image_read_error": 0,
+      "scorer_error": 0,
+      "fewer_than_three_final_candidates": 0
+    }
+  },
+  "test": {
+    "split": "test",
+    "valid_queries": 2327,
+    "excluded_queries": 0,
+    "retrieval": {
+      "item_only": {
+        "recall_at_50": 0.064461,
+        "recall_at_100": 0.107434,
+        "recall_at_200": 0.175763
+      },
+      "context_only": {
+        "recall_at_50": 0.207134,
+        "recall_at_100": 0.286205,
+        "recall_at_200": 0.396218
+      },
+      "hybrid": {
+        "recall_at_50": 0.170606,
+        "recall_at_100": 0.244951,
+        "recall_at_200": 0.339493
+      },
+      "full_union_gt_count": 1027,
+      "full_union_gt_coverage": 0.441341
+    },
+    "reranking": {
+      "eligible_queries": 1027,
+      "gt_rank_improved_count": 603,
+      "gt_rank_improved_ratio": 0.587147,
+      "gt_rank_unchanged_count": 19,
+      "gt_rank_unchanged_ratio": 0.018500,
+      "gt_rank_worsened_count": 405,
+      "gt_rank_worsened_ratio": 0.394352,
+      "mean_rank_change": 33.197663,
+      "median_rank_change": 13.0,
+      "conditional_mrr_before": 0.084052,
+      "conditional_mrr_after": 0.086999,
+      "conditional_mrr_gain": 0.002947
+    },
+    "replacement_success_rate": 0.992838,
+    "runtime_errors": {
+      "image_read_error": 0,
+      "scorer_error": 0,
+      "fewer_than_three_final_candidates": 0
+    }
+  },
+  "interpretation": {
+    "primary_claim": "Category-aware V2 improves exact-reference candidate recovery relative to V1; reranking shows a modest positive exact-reference rank effect on eligible queries.",
+    "not_claimed": [
+      "recommendation accuracy",
+      "human preference accuracy",
+      "unique-correct replacement recovery"
+    ]
+  }
+}
