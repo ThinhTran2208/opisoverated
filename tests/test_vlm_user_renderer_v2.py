@@ -49,21 +49,9 @@ def recommendation_fixture():
         },
     ]
     reranked = [
-        {
-            "item_id": "bag-a",
-            "compatibility_logit": 0.9,
-            "improvement_logit": 2.1,
-        },
-        {
-            "item_id": "bag-b",
-            "compatibility_logit": 0.8,
-            "improvement_logit": 2.0,
-        },
-        {
-            "item_id": "bag-c",
-            "compatibility_logit": 0.7,
-            "improvement_logit": 1.9,
-        },
+        {"item_id": "bag-a", "compatibility_logit": 0.9, "improvement_logit": 2.1},
+        {"item_id": "bag-b", "compatibility_logit": 0.8, "improvement_logit": 2.0},
+        {"item_id": "bag-c", "compatibility_logit": 0.7, "improvement_logit": 1.9},
     ]
     return {
         "status": "ok",
@@ -153,12 +141,17 @@ def analysis_fixture():
 
 
 class VlmUserRendererV2Tests(unittest.TestCase):
-    def test_renders_decisive_plain_vietnamese_for_end_users(self):
+    def test_renders_concise_context_aware_copy(self):
         rendered = render_user_facing_vi_v2(analysis_fixture(), evidence_fixture())
+
         self.assertEqual(rendered["schema_version"], USER_FACING_SCHEMA_VERSION_V2)
-        self.assertIn("chiếc túi hiện tại là món được ưu tiên thay", rendered["problematic_item"]["headline"])
-        self.assertTrue(rendered["problematic_item"]["reason"])
-        self.assertIn("ảnh hưởng lớn nhất", rendered["problematic_item"]["reason"])
+        self.assertIn(
+            "chiếc túi hiện tại là món được ưu tiên thay",
+            rendered["problematic_item"]["headline"],
+        )
+        # Internal contradiction must not be turned into a fabricated user-facing reason.
+        self.assertIsNone(rendered["problematic_item"]["reason"])
+
         self.assertIn("Ba mẫu túi", rendered["summary"])
         self.assertIn("phù hợp hơn", rendered["summary"])
         self.assertEqual(len(rendered["recommendations"]), 3)
@@ -166,42 +159,62 @@ class VlmUserRendererV2Tests(unittest.TestCase):
             [row["display_name"] for row in rendered["recommendations"]],
             ["Mẫu túi 1", "Mẫu túi 2", "Mẫu túi 3"],
         )
-        self.assertIn("lựa chọn ưu tiên nhất", rendered["recommendations"][0]["reason"])
-        self.assertIn("màu sắc phối hợp tốt", rendered["recommendations"][0]["reason"])
-        self.assertIn("lựa chọn thứ hai", rendered["recommendations"][1]["reason"])
-        self.assertIn("phù hợp hơn với outfit", rendered["recommendations"][1]["reason"])
-        self.assertIn(
-            "phom dáng giúp tổng thể outfit cân đối hơn",
-            rendered["recommendations"][2]["reason"],
+
+        self.assertEqual(
+            rendered["recommendations"][0]["reason"],
+            "Màu sắc phối hợp tốt với áo, quần/váy và giày.",
         )
+        self.assertIsNone(rendered["recommendations"][1]["reason"])
+        self.assertEqual(
+            rendered["recommendations"][2]["reason"],
+            "Phom dáng tạo cảm giác cân bằng với áo, quần/váy và giày.",
+        )
+
+    def test_does_not_repeat_rank_boilerplate(self):
+        rendered = render_user_facing_vi_v2(analysis_fixture(), evidence_fixture())
+        prose = rendered["text"].lower()
+
+        for boilerplate in (
+            "lựa chọn ưu tiên nhất",
+            "lựa chọn thứ hai",
+            "lựa chọn thứ ba",
+            "ảnh hưởng lớn nhất",
+        ):
+            self.assertNotIn(boilerplate, prose)
+
+        self.assertIn("mẫu túi 1:", prose)
+        self.assertIn("mẫu túi 3:", prose)
 
     def test_internal_visual_disagreement_is_not_shown_to_user(self):
         rendered = render_user_facing_vi_v2(analysis_fixture(), evidence_fixture())
         prose = rendered["text"].lower()
+
         for awkward_internal_phrase in (
             "tuy nhiên",
-            "không có dấu hiệu lệch",
-            "chưa cho thấy ưu điểm thị giác",
-            "chưa hoàn toàn đồng thuận",
             "không ủng hộ",
+            "contradicts",
+            "ambiguous",
         ):
             self.assertNotIn(awkward_internal_phrase, prose)
-        self.assertIn("mẫu túi 2", prose)
-        self.assertIn("phù hợp hơn với outfit", prose)
 
     def test_user_prose_hides_internal_implementation_terms(self):
         rendered = render_user_facing_vi_v2(analysis_fixture(), evidence_fixture())
-        prose = " ".join(
-            [
-                rendered["text"],
-                rendered["problematic_item"]["headline"],
-                rendered["problematic_item"]["reason"],
-                rendered["summary"],
-                rendered["caution"],
-                *[row["headline"] for row in rendered["recommendations"]],
-                *[row["reason"] for row in rendered["recommendations"]],
-            ]
-        ).lower()
+        values = [
+            rendered["text"],
+            rendered["problematic_item"]["headline"],
+            rendered["summary"],
+            rendered["caution"],
+            *[row["headline"] for row in rendered["recommendations"]],
+            *[
+                row["reason"]
+                for row in rendered["recommendations"]
+                if row["reason"] is not None
+            ],
+        ]
+        if rendered["problematic_item"]["reason"] is not None:
+            values.append(rendered["problematic_item"]["reason"])
+
+        prose = " ".join(values).lower()
         for forbidden in ("loo", "qwen", "logit", "validator", "probability"):
             self.assertNotIn(forbidden, prose)
 
