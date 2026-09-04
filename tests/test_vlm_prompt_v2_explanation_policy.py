@@ -91,10 +91,11 @@ class VlmPromptV2ExplanationPolicyTests(unittest.TestCase):
 
     def test_prompt_prefers_grounded_support_but_forbids_forced_justification(self):
         text = json.dumps(messages_fixture(), ensure_ascii=False)
-        self.assertIn("first seek one concrete positive visible relation", text)
+        self.assertIn("First look for one concrete", text)
         self.assertIn("ambiguous with an empty visual_observations list", text)
         self.assertIn("does NOT mean the candidate should be removed or reranked", text)
-        self.assertIn("Never force support from scorer/LOO/recommendation numbers", text)
+        self.assertIn("Raw numerical scorer, LOO, and recommendation values are intentionally omitted", text)
+        self.assertIn("Do not derive visual labels from rank", text)
 
     def test_repair_prompt_keeps_same_explanation_policy(self):
         repaired = append_repair_request_v2(
@@ -106,6 +107,7 @@ class VlmPromptV2ExplanationPolicyTests(unittest.TestCase):
         self.assertIn("grounded positive visual relation", repair_text)
         self.assertIn("ambiguous with an empty visual_observations list", repair_text)
         self.assertIn("negative filler", repair_text)
+        self.assertIn("imagined scores", repair_text)
 
 
 if __name__ == "__main__":
