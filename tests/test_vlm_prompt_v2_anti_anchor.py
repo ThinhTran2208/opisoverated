@@ -35,7 +35,9 @@ class VlmPromptV2AntiAnchorTests(unittest.TestCase):
         self.assertNotIn('"dimension": "style_coherence"', source)
         self.assertNotIn('"effect": "ambiguous"', source)
         self.assertNotIn('"confidence": "low"', source)
-        self.assertIn("do not default to the first index", source)
+        # inspect.getsource() sees adjacent Python string literals before they are
+        # concatenated at runtime, so assert on the contiguous literal fragment.
+        self.assertIn("not default to the first index", source)
         self.assertIn("Evaluate each candidate independently", source)
 
     def test_fixture_helper_is_documented_test_only(self):
