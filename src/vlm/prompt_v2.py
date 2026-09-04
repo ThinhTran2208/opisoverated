@@ -83,6 +83,14 @@ Hard rules:
 8. Copy the exact required limitations list, including the conditional
    loo_uses_two_item_extrapolation token when requested.
 9. Return exactly one JSON object with no Markdown fence and no extra keys.
+10. There is deliberately no example visual answer in the prompt. Determine every
+    visual dimension, effect, confidence, and overall label from the supplied
+    images. Do not use a default label merely because it is listed as an allowed
+    token. Use ambiguous only when the visible evidence is genuinely weak, mixed,
+    or insufficient.
+11. Inspect the diagnosis and each recommendation candidate independently. Do not
+    mechanically reuse the same dimension/effect/confidence or the first context
+    item for every row unless the supplied images genuinely support that result.
 """
 
 
@@ -153,7 +161,13 @@ def _normalize_recommendation_image_refs(
 
 
 def expected_output_shape_v2(evidence: Mapping[str, object]) -> dict:
-    """Build one closed-taxonomy example preserving all authoritative identities."""
+    """Build a validator-safe fixture preserving authoritative identities.
+
+    This helper is intentionally retained for deterministic unit tests and fake
+    backends. It MUST NOT be embedded in the real Qwen prompt because populated
+    semantic values can anchor the model toward the fixture instead of the
+    supplied images.
+    """
 
     normalized = validate_vlm_evidence_v2(evidence)
     diagnosis = normalized["diagnosis"]
@@ -201,6 +215,75 @@ def expected_output_shape_v2(evidence: Mapping[str, object]) -> dict:
         "recommendations": recommendations,
         "limitations": list(required_limitations_v2(normalized)),
     }
+
+
+def _output_contract_text_v2(evidence: Mapping[str, object]) -> str:
+    """Describe the exact output structure without seeding semantic answers."""
+
+    normalized = validate_vlm_evidence_v2(evidence)
+    diagnosis = normalized["diagnosis"]
+    problem_index = int(diagnosis["problematic_item_index"])
+    problem_id = str(diagnosis["problematic_item_id"])
+    context_indices = [
+        int(row["item_index"])
+        for row in normalized["items"]
+        if int(row["item_index"]) != problem_index
+    ]
+    limitations = list(required_limitations_v2(normalized))
+    recommendation_identity_lines = "\n".join(
+        (
+            f"  - row {position}: rank={int(candidate['rank'])}, "
+            f"item_id={candidate['item_id']}"
+        )
+        for position, candidate in enumerate(
+            normalized["recommendation"]["items"], start=1
+        )
+    )
+
+    return (
+        "OUTPUT JSON CONTRACT (schema instructions, NOT an example analysis):\n"
+        "Top-level keys must be exactly: schema_version, problematic_item_index, "
+        "problematic_item_id, diagnosis, recommendations, limitations.\n"
+        f"- schema_version must be exactly {VISUAL_ANALYSIS_SCHEMA_VERSION_V2}.\n"
+        f"- problematic_item_index must be exactly {problem_index}.\n"
+        f"- problematic_item_id must be exactly {problem_id}.\n"
+        "- diagnosis must contain exactly overall_visual_support and visual_observations.\n"
+        f"  * overall_visual_support: choose one of {list(DIAGNOSIS_OVERALL_SUPPORT_V2)} "
+        "from the outfit images.\n"
+        "  * visual_observations: a JSON list of zero or more objects. Prefer one most "
+        "informative visible relation; add a second only when it contributes a different "
+        "dimension. Do not add filler observations.\n"
+        "  * each diagnosis observation must contain exactly item_indices, dimension, "
+        "effect, confidence. item_indices must include the problematic index and only "
+        "reference original outfit items.\n"
+        f"  * dimension: choose one of {list(VISUAL_DIMENSIONS_V2)}.\n"
+        f"  * effect: choose one of {list(DIAGNOSIS_EFFECTS_V2)}.\n"
+        f"  * confidence: choose one of {list(VISUAL_CONFIDENCE_LEVELS_V2)}.\n"
+        "- recommendations must be a JSON list of exactly three objects in this exact "
+        "identity order:\n"
+        f"{recommendation_identity_lines}\n"
+        "  * each recommendation object must contain exactly rank, item_id, "
+        "overall_visual_support, visual_observations.\n"
+        f"  * overall_visual_support: choose one of {list(RECOMMENDATION_OVERALL_SUPPORT_V2)} "
+        "from that candidate image versus the remaining outfit context.\n"
+        "  * visual_observations: a JSON list of zero or more objects. Prefer one most "
+        "informative visible relation; add a second only when it contributes a different "
+        "dimension. Evaluate each candidate independently.\n"
+        "  * each recommendation observation must contain exactly context_item_indices, "
+        "dimension, effect, confidence. context_item_indices may use only these remaining "
+        f"original outfit indices: {context_indices}. Use every context index materially "
+        "involved in the claimed visible relation; do not default to the first index.\n"
+        f"  * dimension: choose one of {list(VISUAL_DIMENSIONS_V2)}.\n"
+        f"  * effect: choose one of {list(RECOMMENDATION_EFFECTS_V2)}.\n"
+        f"  * confidence: choose one of {list(VISUAL_CONFIDENCE_LEVELS_V2)}.\n"
+        "- If any visual_observations list is empty, its overall_visual_support must be "
+        "ambiguous. Otherwise the overall label must summarize the visible observations; "
+        "use ambiguous for genuinely weak, mixed, or insufficient visual evidence.\n"
+        f"- limitations must be exactly this JSON array: {json.dumps(limitations, ensure_ascii=False)}.\n"
+        "Before producing JSON, inspect all supplied images. Do not infer visual support "
+        "from scorer/LOO/recommendation numbers, and do not copy a semantic default from "
+        "these schema instructions."
+    )
 
 
 def build_qwen_messages_v2(
@@ -307,14 +390,7 @@ def build_qwen_messages_v2(
         )
 
     prompt_payload = json.dumps(normalized, indent=2, ensure_ascii=False)
-    output_shape = json.dumps(
-        expected_output_shape_v2(normalized), indent=2, ensure_ascii=False
-    )
-    context_indices = [
-        int(row["item_index"])
-        for row in normalized["items"]
-        if int(row["item_index"]) != problem_index
-    ]
+    output_contract = _output_contract_text_v2(normalized)
 
     content.append(
         {
@@ -322,20 +398,10 @@ def build_qwen_messages_v2(
             "text": (
                 f"The following {EVIDENCE_SCHEMA_VERSION_V2} JSON is authoritative.\n"
                 f"EVIDENCE:\n{prompt_payload}\n\n"
-                "Return JSON with exactly the requested shape and no free-text fields. "
-                "Diagnosis visual_observations may be repeated or empty; every diagnosis "
-                "observation must include the authoritative problematic item. Recommendation "
-                "visual_observations may be repeated or empty and may reference only these "
-                f"remaining original outfit context indices: {context_indices}. "
-                "Recommendation rows must remain exactly rank 1, 2, 3 with the authoritative "
-                "item_ids shown in the requested shape. If an observation list is empty, its "
-                "overall_visual_support must be ambiguous.\n"
-                f"Allowed dimension tokens: {list(VISUAL_DIMENSIONS_V2)}.\n"
-                f"Allowed diagnosis effect/overall tokens: {list(DIAGNOSIS_EFFECTS_V2)}.\n"
-                "Allowed recommendation effect/overall tokens: "
-                f"{list(RECOMMENDATION_EFFECTS_V2)}.\n"
-                f"Allowed confidence tokens: {list(VISUAL_CONFIDENCE_LEVELS_V2)}.\n"
-                f"REQUESTED SHAPE:\n{output_shape}"
+                "Inspect the supplied images first, then return exactly one JSON object "
+                "that follows the contract below. There is intentionally no populated "
+                "visual-analysis example to copy.\n\n"
+                f"{output_contract}"
             ),
         }
     )
@@ -370,7 +436,9 @@ def append_repair_request_v2(
                         f"{validation_error}. Return corrected JSON only. Do not emit "
                         "natural-language strings. Do not change the problematic item, "
                         "recommendation candidate identities, or recommendation ranks. "
-                        "Use only enum tokens from the requested shape."
+                        "Use only enum tokens from the output contract. Repair schema or "
+                        "identity mistakes without replacing image-grounded visual labels "
+                        "with mechanical defaults."
                     ),
                 }
             ],
