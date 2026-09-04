@@ -2,6 +2,7 @@
   "recommendation_version": "category-aware-hybrid-v2",
   "artifact_mode": "zip-direct",
   "retrieval_scope": "exact_master_category_before_cosine",
+  "runtime_fallback": "core7_when_master_category_unavailable",
   "embedding_version": "fashionclip-512-l2-v1",
   "expected_embedding_count": 142480,
   "expected_image_count": 142480,
