@@ -156,18 +156,26 @@ class VlmUserRendererV2Tests(unittest.TestCase):
     def test_renders_plain_vietnamese_for_end_users(self):
         rendered = render_user_facing_vi_v2(analysis_fixture(), evidence_fixture())
         self.assertEqual(rendered["schema_version"], USER_FACING_SCHEMA_VERSION_V2)
-        self.assertIn("Item 3", rendered["problematic_item"]["headline"])
-        self.assertIn("món đồ có vấn đề nhất", rendered["problematic_item"]["headline"])
-        self.assertIn("Bạn nên thử thay Item 3", rendered["summary"])
+        self.assertIn("Chiếc túi hiện tại", rendered["problematic_item"]["headline"])
+        self.assertIn("kém phù hợp nhất", rendered["problematic_item"]["headline"])
+        self.assertIn("ba mẫu túi", rendered["summary"])
         self.assertEqual(len(rendered["recommendations"]), 3)
+        self.assertEqual(
+            [row["display_name"] for row in rendered["recommendations"]],
+            ["Mẫu túi 1", "Mẫu túi 2", "Mẫu túi 3"],
+        )
         self.assertIn("màu sắc hài hòa", rendered["recommendations"][0]["reason"])
         self.assertIn("chưa cho thấy ưu điểm thị giác đủ rõ", rendered["recommendations"][1]["reason"])
         self.assertIn("phom dáng giúp outfit cân đối hơn", rendered["recommendations"][2]["reason"])
+        self.assertIn("Mẫu túi 1", rendered["text"])
+        self.assertIn("Mẫu túi 2", rendered["text"])
+        self.assertIn("Mẫu túi 3", rendered["text"])
 
     def test_user_prose_hides_internal_implementation_terms(self):
         rendered = render_user_facing_vi_v2(analysis_fixture(), evidence_fixture())
         prose = " ".join(
             [
+                rendered["text"],
                 rendered["problematic_item"]["headline"],
                 rendered["problematic_item"]["reason"],
                 rendered["summary"],
