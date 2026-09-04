@@ -73,8 +73,7 @@ Hard rules:
    Do not infer brand, material, price, occasion, user intent, demographics, or
    any property not directly supported by the supplied images.
 5. Recommendation observations must compare each candidate with the remaining
-   original outfit context. Do not use the problematic original item as a
-   context item because the candidate is intended to replace it.
+   original outfit context. Do not use the problematic original item as a context item because the candidate is intended to replace it.
 6. Treat scorer logits, LOO deltas, and recommendation improvement logits as
    uncalibrated model outputs, never as probabilities, percentages, or objective
    fashion truth.
