@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Standalone Recommendation V2 orchestration.
 
-V2 changes only candidate retrieval: exact ``master_category`` is applied
-before both cosine Top-K searches. Frozen scorer reranking and LOO integration
-remain unchanged.
+V2 changes candidate retrieval to category-aware search before cosine Top-K.
+It supports both legacy ZIP-direct artifacts and portable directory artifacts.
+Frozen scorer reranking and LOO integration remain unchanged.
 """
 
 from __future__ import annotations
@@ -91,19 +91,8 @@ class RecommendationPipeline:
         self.final_k = int(final_k)
         self.trace_writer = trace_writer
 
-    @classmethod
-    def load_from_archives(
-        cls,
-        config_path: Path | str,
-        *,
-        ml_zip_path: Path | str,
-        image_zip_paths: Sequence[Path | str],
-        device: str | object = "cpu",
-    ) -> "RecommendationPipeline":
-        from .reranker import FROZEN_V5_SHA256
-        from .zip_artifacts import FROZEN_V5_ENTRY, MLFinalZipBundle
-        from .zip_images import ZipImageResolver
-
+    @staticmethod
+    def _load_config(config_path: Path | str) -> dict[str, object]:
         source = Path(config_path).resolve()
         config = json.loads(source.read_text(encoding="utf-8"))
         if not isinstance(config, dict):
@@ -112,31 +101,32 @@ class RecommendationPipeline:
             raise ValueError("Unsupported recommendation_version")
         if config.get("retrieval_scope") != "exact_master_category_before_cosine":
             raise ValueError("Recommendation V2 requires category-aware retrieval")
+        if config.get("runtime_fallback") != "core7_when_master_category_unavailable":
+            raise ValueError("Recommendation V2 runtime fallback contract mismatch")
         if config.get("scorer_version") != "type_aware_pairwise_v1":
             raise ValueError("Recommendation V2 requires the frozen V5 scorer contract")
         if config.get("embedding_version") != "fashionclip-512-l2-v1":
             raise ValueError("Recommendation V2 requires FashionCLIP 512-D embeddings")
         if config.get("category_mapping_version") != "core7-v2":
             raise ValueError("Recommendation V2 requires Core-7 V2 categories")
-        if config.get("artifact_mode") != "zip-direct":
-            raise ValueError("Recommendation V2 requires artifact_mode='zip-direct'")
-        if config.get("checkpoint_entry") != FROZEN_V5_ENTRY:
-            raise ValueError("Recommendation config does not target frozen V5 in ZIP")
-        if config.get("checkpoint_sha256") != FROZEN_V5_SHA256:
-            raise ValueError("Recommendation config frozen V5 SHA-256 mismatch")
+        return config
 
-        bundle = MLFinalZipBundle(ml_zip_path)
-        catalog = bundle.load_embedding_catalog()
+    @classmethod
+    def _build(
+        cls,
+        *,
+        config: dict[str, object],
+        bundle,
+        catalog,
+        metadata,
+        image_resolver,
+        device: str | object,
+    ) -> "RecommendationPipeline":
         expected_embeddings = int(config.get("expected_embedding_count", 142_480))
         if len(catalog) != expected_embeddings:
             raise ValueError(
                 f"Expected {expected_embeddings} catalog embeddings, found {len(catalog)}"
             )
-        metadata = bundle.load_metadata_index()
-        image_resolver = ZipImageResolver(
-            image_zip_paths,
-            expected_count=int(config.get("expected_image_count", 142_480)),
-        )
         image_validation = bundle.validate_image_catalog(image_resolver)
         reranker = bundle.load_frozen_v5_reranker(
             device=device,
@@ -156,6 +146,73 @@ class RecommendationPipeline:
         pipeline.artifact_bundle = bundle
         pipeline.image_validation = image_validation
         return pipeline
+
+    @classmethod
+    def load_from_archives(
+        cls,
+        config_path: Path | str,
+        *,
+        ml_zip_path: Path | str,
+        image_zip_paths: Sequence[Path | str],
+        device: str | object = "cpu",
+    ) -> "RecommendationPipeline":
+        from .reranker import FROZEN_V5_SHA256
+        from .zip_artifacts import FROZEN_V5_ENTRY, MLFinalZipBundle
+        from .zip_images import ZipImageResolver
+
+        config = cls._load_config(config_path)
+        if config.get("checkpoint_entry") != FROZEN_V5_ENTRY:
+            raise ValueError("Recommendation config does not target frozen V5 in ZIP")
+        if config.get("checkpoint_sha256") != FROZEN_V5_SHA256:
+            raise ValueError("Recommendation config frozen V5 SHA-256 mismatch")
+
+        bundle = MLFinalZipBundle(ml_zip_path)
+        catalog = bundle.load_embedding_catalog()
+        metadata = bundle.load_metadata_index()
+        image_resolver = ZipImageResolver(
+            image_zip_paths,
+            expected_count=int(config.get("expected_image_count", 142_480)),
+        )
+        return cls._build(
+            config=config,
+            bundle=bundle,
+            catalog=catalog,
+            metadata=metadata,
+            image_resolver=image_resolver,
+            device=device,
+        )
+
+    @classmethod
+    def load_from_directories(
+        cls,
+        config_path: Path | str,
+        *,
+        artifact_root: Path | str,
+        image_root: Path | str,
+        device: str | object = "cpu",
+    ) -> "RecommendationPipeline":
+        from .directory_artifacts import MLFinalDirectoryBundle
+        from .directory_images import DirectoryImageResolver
+        from .reranker import FROZEN_V5_SHA256
+
+        config = cls._load_config(config_path)
+        if config.get("checkpoint_sha256") != FROZEN_V5_SHA256:
+            raise ValueError("Recommendation config frozen V5 SHA-256 mismatch")
+
+        bundle = MLFinalDirectoryBundle(artifact_root)
+        catalog = bundle.load_embedding_catalog()
+        metadata = bundle.load_metadata_index()
+        # Do not force a hard global image count in directory mode. Evaluation
+        # reports exact coverage so partial image directories cannot pass silently.
+        image_resolver = DirectoryImageResolver(image_root, expected_count=None)
+        return cls._build(
+            config=config,
+            bundle=bundle,
+            catalog=catalog,
+            metadata=metadata,
+            image_resolver=image_resolver,
+            device=device,
+        )
 
     def recommend(
         self,
@@ -287,9 +344,7 @@ class RecommendationPipeline:
         if not 0 <= problematic_index < len(outfit_item_ids):
             raise ValueError("problematic_index is outside the outfit")
         target_category = int(outfit_category_ids[problematic_index])
-        target_master = self.metadata.master_category(
-            str(outfit_item_ids[problematic_index])
-        )
+        target_master = self.metadata.master_category(str(outfit_item_ids[problematic_index]))
         retrieval = self.retriever.retrieve(
             outfit_item_ids=outfit_item_ids,
             outfit_embeddings=outfit_embeddings,
@@ -346,7 +401,10 @@ class RecommendationPipeline:
                 None if loo_result is None else loo_result.get("protocol_version")
             ),
             "retrieval": {
-                "retrieval_scope": "exact_master_category_before_cosine",
+                "retrieval_scope": retrieval.retrieval_scope,
+                "used_core7_fallback": retrieval.used_core7_fallback,
+                "target_master_category": retrieval.target_master_category,
+                "target_category_id": retrieval.target_category_id,
                 "category_pool_count": retrieval.category_pool_count,
                 "problematic_hit_count": retrieval.problematic_hit_count,
                 "context_hit_count": retrieval.context_hit_count,
@@ -356,9 +414,7 @@ class RecommendationPipeline:
                 "missing_image_count": retrieval.missing_image_count,
                 "missing_embedding_count": retrieval.missing_embedding_count,
             },
-            "catalog": (
-                self.catalog.status.to_dict() if hasattr(self.catalog, "status") else None
-            ),
+            "catalog": self.catalog.status.to_dict() if hasattr(self.catalog, "status") else None,
             "reranked_candidates": [
                 {
                     "item_id": row.item_id,
