@@ -2,16 +2,18 @@
 
 ## Scope
 
-Recommendation V2 keeps the frozen FashionCLIP embeddings, LOO diagnosis integration, and frozen V5 compatibility scorer from V1. The only model-logic change is candidate retrieval order.
+Recommendation V2 keeps the frozen FashionCLIP embeddings, LOO diagnosis integration, and frozen V5 compatibility scorer from V1. The main model-logic change is candidate retrieval order, with a runtime robustness fallback when exact master-category metadata is unavailable.
 
 ```text
 problematic item
-  -> resolve exact master_category
-  -> build eligible candidate pool from the same master_category
+  -> if exact master_category is available:
+       build eligible pool from the same master_category
+     else:
+       fall back to the same Core-7 coarse category
   -> exclude current outfit items
-  -> require embedding + image availability
-  -> item-query cosine Top-200 inside that category pool
-  -> context-centroid cosine Top-200 inside that category pool
+  -> require metadata + embedding + image availability
+  -> item-query cosine Top-200 inside the selected category pool
+  -> context-centroid cosine Top-200 inside the selected category pool
   -> union + de-duplicate
   -> frozen V5 scorer reranking
   -> public Top-3
@@ -19,7 +21,40 @@ problematic item
 
 ## Why V2 exists
 
-V1 performed global cosine Top-200 before exact `master_category` filtering. This could spend most of the Top-200 budget on categories that cannot replace the problematic item. V2 applies the replacement-category constraint first so both retrieval channels spend their full search budget inside the eligible category.
+V1 performed global cosine Top-200 before exact `master_category` filtering. This could spend most of the Top-200 budget on categories that cannot replace the problematic item. V2 applies the replacement-category constraint first so both retrieval channels spend their search budget inside an eligible replacement pool.
+
+## Category selection policy
+
+Preferred path:
+
+```text
+exact master_category available
+→ exact master-category pool
+```
+
+Runtime fallback:
+
+```text
+exact master_category unavailable
+but Core-7 category is known
+→ Core-7 category pool
+```
+
+Examples:
+
+```text
+master_category = T-Shirts, coarse = TOP
+→ search only T-Shirts
+```
+
+```text
+master_category = missing, coarse = TOP
+→ fallback to all eligible TOP items
+```
+
+If neither exact master category nor a valid Core-7 category is available, recommendation cannot proceed.
+
+The offline Polyvore one-item-swap benchmark normally has exact master-category metadata, so its intended V2 evaluation path remains the exact-master-category path. Core-7 fallback is a runtime robustness mechanism, not a way to broaden the benchmark pool unnecessarily.
 
 ## Two retrieval channels
 
@@ -29,7 +64,7 @@ V1 performed global cosine Top-200 before exact `master_category` filtering. Thi
 query = FashionCLIP embedding(problematic item)
 ```
 
-Cosine similarity is computed only against eligible items in the same exact `master_category`, then Top-200 are retained.
+Cosine similarity is computed only against the selected category-constrained candidate pool, then Top-200 are retained.
 
 ### Context channel
 
@@ -38,9 +73,9 @@ context = mean(FashionCLIP embeddings of all non-problematic outfit items)
 context = L2_normalize(context)
 ```
 
-Cosine similarity is computed between this context vector and the same category-constrained candidate pool, then Top-200 are retained.
+Cosine similarity is computed between this context vector and the same selected candidate pool, then Top-200 are retained.
 
-The two Top-200 lists are unioned and de-duplicated. The union may contain fewer than 400 items because the channels can overlap or the category pool can contain fewer than 200 eligible items.
+The two Top-200 lists are unioned and de-duplicated. The union may contain fewer than 400 items because the channels can overlap or the selected pool can contain fewer than 200 eligible items.
 
 ## Reranking
 
@@ -61,6 +96,8 @@ Runtime can use the existing LOO diagnosis path:
 ```text
 outfit -> LOO -> problematic index -> Recommendation V2 -> Top-3
 ```
+
+At runtime, Recommendation V2 uses the category policy above: exact master category first, Core-7 fallback only if exact metadata is unavailable.
 
 The current offline component evaluation does not evaluate LOO. It uses the known synthetic `swapped_item_index` so recommendation retrieval/reranking can be measured independently.
 
@@ -102,6 +139,7 @@ For the project report, retrieval Recall@200 should be emphasized as the main di
 ```text
 recommendation_version = category-aware-hybrid-v2
 retrieval_scope        = exact_master_category_before_cosine
+runtime_fallback       = core7_when_master_category_unavailable
 top_k_problematic      = 200
 top_k_context          = 200
 final_k                = 3
