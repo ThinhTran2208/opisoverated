@@ -43,6 +43,10 @@ from .schema_v2 import (
     validate_recommendation_evidence,
     validate_vlm_evidence_v2,
 )
+from .user_renderer_v2 import (
+    USER_FACING_SCHEMA_VERSION_V2,
+    render_user_facing_vi_v2,
+)
 
 __all__ = [
     "CANONICAL_MODEL_ID",
@@ -54,6 +58,7 @@ __all__ = [
     "HANDOFF_SCHEMA_VERSION_V2",
     "Qwen3VLBackendV2",
     "RUN_SCHEMA_VERSION_V2",
+    "USER_FACING_SCHEMA_VERSION_V2",
     "VISUAL_ANALYSIS_SCHEMA_VERSION_V2",
     "VLMExplanationPipeline",
     "VLMExplanationPipelineV2",
@@ -71,6 +76,7 @@ __all__ = [
     "load_vlm_config_v2",
     "render_explanation_vi",
     "render_explanation_vi_v2",
+    "render_user_facing_vi_v2",
     "required_limitations_v2",
     "validate_recommendation_evidence",
     "validate_vlm_config_v2",
