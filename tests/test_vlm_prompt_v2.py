@@ -4,9 +4,11 @@ import json
 import unittest
 
 from src.vlm.prompt_v2 import (
+    PROMPT_CONTEXT_SCHEMA_VERSION_V2,
     TWO_ITEM_EXTRAPOLATION_LIMITATION,
     VISUAL_ANALYSIS_SCHEMA_VERSION_V2,
     append_repair_request_v2,
+    build_prompt_context_v2,
     build_qwen_messages_v2,
     expected_output_shape_v2,
     required_limitations_v2,
@@ -115,12 +117,23 @@ def evidence_fixture(*, extrapolation=False):
 
 
 def recommendation_images():
-    # Intentionally not rank-ordered: item_id keyed binding must restore rank order.
     return {
         "candidate-c": "https://example.com/c.jpg",
         "candidate-a": "https://example.com/a.jpg",
         "candidate-b": "https://example.com/b.jpg",
     }
+
+
+def _collect_keys(value):
+    keys = set()
+    if isinstance(value, dict):
+        for key, child in value.items():
+            keys.add(key)
+            keys.update(_collect_keys(child))
+    elif isinstance(value, list):
+        for child in value:
+            keys.update(_collect_keys(child))
+    return keys
 
 
 class VlmPromptV2Tests(unittest.TestCase):
@@ -142,7 +155,7 @@ class VlmPromptV2Tests(unittest.TestCase):
             row["text"] for row in user_content if row["type"] == "text"
         )
 
-        self.assertEqual(len(image_rows), 7)  # 4 original crops + Top-3 candidates.
+        self.assertEqual(len(image_rows), 7)
         self.assertIn("VISUAL INPUT GROUP: ORIGINAL OUTFIT ITEM CROPS", text)
         self.assertIn("item_index=1, item_id=bottom", text)
         self.assertIn("problematic_item=true", text)
@@ -151,11 +164,10 @@ class VlmPromptV2Tests(unittest.TestCase):
         self.assertIn("rank=2, item_id=candidate-b", text)
         self.assertIn("rank=3, item_id=candidate-c", text)
         self.assertIn("Do not change this candidate identity or rank", text)
-        self.assertIn("vlm-evidence-v2", text)
+        self.assertIn(PROMPT_CONTEXT_SCHEMA_VERSION_V2, text)
+        self.assertIn("Raw scorer, LOO, and recommendation numerical values are deliberately omitted", text)
         self.assertIn("no free-text fields", text)
 
-        # Images after the four outfit images must follow authoritative rank order,
-        # regardless of dictionary insertion order supplied by the caller.
         self.assertEqual(
             [row["image"] for row in image_rows[-3:]],
             [
@@ -164,6 +176,44 @@ class VlmPromptV2Tests(unittest.TestCase):
                 "https://example.com/c.jpg",
             ],
         )
+
+    def test_prompt_context_projects_out_all_raw_score_keys(self):
+        context = build_prompt_context_v2(evidence_fixture())
+        self.assertEqual(context["schema_version"], PROMPT_CONTEXT_SCHEMA_VERSION_V2)
+        keys = _collect_keys(context)
+        for forbidden_score_key in (
+            "compatibility_logit",
+            "improvement_logit",
+            "full_logit",
+            "without_item_logits",
+            "without_item_logit",
+            "loo_delta",
+            "deltas_without_minus_full",
+            "top1_top2_delta_gap",
+            "score_semantics",
+            "ranking_semantics",
+        ):
+            self.assertNotIn(forbidden_score_key, keys)
+
+    def test_real_prompt_does_not_embed_raw_numeric_score_fields(self):
+        messages = build_qwen_messages_v2(
+            evidence_fixture(),
+            [f"https://example.com/outfit-{index}.jpg" for index in range(4)],
+            recommendation_images(),
+            min_pixels=262144,
+            max_pixels=262144,
+            must_exist=False,
+        )
+        prompt_text = json.dumps(messages, ensure_ascii=False)
+        for raw_json_field in (
+            '"compatibility_logit":',
+            '"improvement_logit":',
+            '"full_logit":',
+            '"without_item_logits":',
+            '"loo_delta":',
+            '"top1_top2_delta_gap":',
+        ):
+            self.assertNotIn(raw_json_field, prompt_text)
 
     def test_recommendation_image_keys_must_exactly_match_top3_ids(self):
         evidence = evidence_fixture()
@@ -229,7 +279,7 @@ class VlmPromptV2Tests(unittest.TestCase):
         prompt_text = json.dumps(messages, ensure_ascii=False)
         self.assertIn("remaining original outfit context indices: [0, 2, 3]", prompt_text)
         self.assertIn(
-            "Do not use the problematic original item as a context item",
+            "Do not use the problematic original item as recommendation context",
             prompt_text,
         )
 
@@ -273,6 +323,7 @@ class VlmPromptV2Tests(unittest.TestCase):
         self.assertIn("Do not change the problematic item", repair_text)
         self.assertIn("recommendation candidate identities", repair_text)
         self.assertIn("recommendation ranks", repair_text)
+        self.assertIn("Do not infer visual labels from rank or imagined scores", repair_text)
 
     def test_rejects_invalid_pixel_budget(self):
         with self.assertRaisesRegex(ValueError, "1 <= min_pixels <= max_pixels"):
