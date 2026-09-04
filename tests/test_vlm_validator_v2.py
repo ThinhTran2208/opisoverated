@@ -174,6 +174,12 @@ class VlmValidatorV2Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reference the problematic item"):
             validate_visual_analysis_v2(analysis, evidence_fixture())
 
+    def test_diagnosis_observation_must_be_relational(self):
+        analysis = valid_analysis()
+        analysis["diagnosis"]["visual_observations"][0]["item_indices"] = [1]
+        with self.assertRaisesRegex(ValueError, "plus at least one other original outfit item"):
+            validate_visual_analysis_v2(analysis, evidence_fixture())
+
     def test_recommendation_context_cannot_include_problematic_item(self):
         analysis = valid_analysis()
         analysis["recommendations"][0]["visual_observations"][0][
@@ -209,6 +215,35 @@ class VlmValidatorV2Tests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "requires a supporting observation"):
             validate_visual_analysis_v2(analysis, evidence_fixture())
+
+    def test_rejects_exact_cloned_high_confidence_top3_analysis(self):
+        analysis = valid_analysis()
+        for position, item_id in enumerate(("candidate-a", "candidate-b", "candidate-c")):
+            analysis["recommendations"][position] = {
+                "rank": position + 1,
+                "item_id": item_id,
+                "overall_visual_support": "supports_recommendation",
+                "visual_observations": [
+                    {
+                        "context_item_indices": [0, 2, 3],
+                        "dimension": "color_harmony",
+                        "effect": "supports_recommendation",
+                        "confidence": "high",
+                    },
+                    {
+                        "context_item_indices": [0, 2, 3],
+                        "dimension": "formality_alignment",
+                        "effect": "supports_recommendation",
+                        "confidence": "high",
+                    },
+                ],
+            }
+        with self.assertRaisesRegex(ValueError, "exact cloned high-confidence pattern"):
+            validate_visual_analysis_v2(analysis, evidence_fixture())
+
+    def test_allows_identical_ambiguous_low_confidence_top3_analysis(self):
+        analysis = expected_output_shape_v2(evidence_fixture())
+        validate_visual_analysis_v2(analysis, evidence_fixture())
 
     def test_rejects_wrong_taxonomy_for_recommendation(self):
         analysis = valid_analysis()
