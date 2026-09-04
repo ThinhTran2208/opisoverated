@@ -153,23 +153,38 @@ def analysis_fixture():
 
 
 class VlmUserRendererV2Tests(unittest.TestCase):
-    def test_renders_plain_vietnamese_for_end_users(self):
+    def test_renders_decisive_plain_vietnamese_for_end_users(self):
         rendered = render_user_facing_vi_v2(analysis_fixture(), evidence_fixture())
         self.assertEqual(rendered["schema_version"], USER_FACING_SCHEMA_VERSION_V2)
         self.assertIn("Chiếc túi hiện tại", rendered["problematic_item"]["headline"])
         self.assertIn("kém phù hợp nhất", rendered["problematic_item"]["headline"])
-        self.assertIn("ba mẫu túi", rendered["summary"])
+        self.assertIn("Cả ba mẫu túi", rendered["summary"])
+        self.assertIn("phù hợp hơn", rendered["summary"])
         self.assertEqual(len(rendered["recommendations"]), 3)
         self.assertEqual(
             [row["display_name"] for row in rendered["recommendations"]],
             ["Mẫu túi 1", "Mẫu túi 2", "Mẫu túi 3"],
         )
-        self.assertIn("màu sắc hài hòa", rendered["recommendations"][0]["reason"])
-        self.assertIn("chưa cho thấy ưu điểm thị giác đủ rõ", rendered["recommendations"][1]["reason"])
-        self.assertIn("phom dáng giúp outfit cân đối hơn", rendered["recommendations"][2]["reason"])
-        self.assertIn("Mẫu túi 1", rendered["text"])
-        self.assertIn("Mẫu túi 2", rendered["text"])
-        self.assertIn("Mẫu túi 3", rendered["text"])
+        self.assertIn("màu sắc phối hợp tốt", rendered["recommendations"][0]["reason"])
+        self.assertIn("phù hợp hơn chiếc túi hiện tại", rendered["recommendations"][1]["reason"])
+        self.assertIn(
+            "phom dáng giúp tổng thể outfit cân đối hơn",
+            rendered["recommendations"][2]["reason"],
+        )
+
+    def test_internal_visual_disagreement_is_not_shown_to_user(self):
+        rendered = render_user_facing_vi_v2(analysis_fixture(), evidence_fixture())
+        prose = rendered["text"].lower()
+        for awkward_internal_phrase in (
+            "tuy nhiên",
+            "không có dấu hiệu lệch",
+            "chưa cho thấy ưu điểm thị giác",
+            "chưa hoàn toàn đồng thuận",
+            "không ủng hộ",
+        ):
+            self.assertNotIn(awkward_internal_phrase, prose)
+        self.assertIn("mẫu túi 2", prose)
+        self.assertIn("phù hợp hơn chiếc túi hiện tại", prose)
 
     def test_user_prose_hides_internal_implementation_terms(self):
         rendered = render_user_facing_vi_v2(analysis_fixture(), evidence_fixture())
