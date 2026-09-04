@@ -2,11 +2,13 @@
 
 ## Frozen status
 
-Recommendation V2 is frozen for the final report on branch:
+Recommendation V2 is frozen for the final report on the canonical branch:
 
 ```text
-feat/recommendation-conditional-hit-v2
+feat/recommendation-rank-diagnostics-v2
 ```
+
+The previous experimental branch name `feat/recommendation-conditional-hit-v2` is deprecated because Conditional Hit@3 is no longer part of the main reporting protocol.
 
 The evaluation code used for the recorded VALID/TEST runs is commit:
 
