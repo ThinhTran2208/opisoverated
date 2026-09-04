@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""End-to-end ZIP-direct Recommendation V1 demo."""
+"""End-to-end ZIP-direct Recommendation V2 demo."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .pipeline import RecommendationPipeline
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run Hybrid Recommendation V1")
+    parser = argparse.ArgumentParser(description="Run Category-Aware Hybrid Recommendation V2")
     parser.add_argument("--ml-zip", required=True)
     parser.add_argument("--image-zip", action="append", required=True)
     parser.add_argument(
@@ -21,7 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=str(
             Path(__file__).resolve().parents[2]
             / "configs"
-            / "recommendation_hybrid_v1.json"
+            / "recommendation_category_aware_v2.json"
         ),
     )
     parser.add_argument("--output-dir", required=True)
@@ -47,9 +47,7 @@ def _fixture_result(pipeline, records):
             continue
         try:
             embeddings = pipeline.catalog.get_embeddings(item_ids)
-            categories = [
-                int(pipeline.metadata.category_id(item_id)) for item_id in item_ids
-            ]
+            categories = [int(pipeline.metadata.category_id(item_id)) for item_id in item_ids]
             result = pipeline.recommend(
                 outfit_item_ids=item_ids,
                 outfit_embeddings=embeddings,
@@ -60,7 +58,7 @@ def _fixture_result(pipeline, records):
         except (KeyError, TypeError, ValueError, RuntimeError) as error:
             failures.append(f"{row.get('sample_id')}: {error}")
     raise RuntimeError(
-        "No Evaluation3 fixture produced three recommendations. "
+        "No one-item-swap fixture produced three recommendations. "
         f"First failures: {failures[:3]}"
     )
 
@@ -80,7 +78,7 @@ def _render_html(report: dict[str, object], image_files: list[str]) -> str:
     return """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Hybrid Recommendation V1 Demo</title>
+<title>Category-Aware Recommendation V2 Demo</title>
 <style>
 body{font-family:system-ui;margin:2rem;background:#f5f5f5;color:#171717}
 main{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem}
@@ -88,7 +86,7 @@ article{background:white;padding:1rem;border-radius:12px;box-shadow:0 2px 12px #
 img{width:100%;aspect-ratio:1;object-fit:contain;background:#eee}
 h1{margin-bottom:.25rem} .meta{color:#555;margin-bottom:1.5rem}
 </style></head><body>
-<h1>Hybrid Recommendation V1</h1>
+<h1>Category-Aware Recommendation V2</h1>
 <p class="meta">Scores are intentionally omitted from this demo.</p>
 <main>""" + "".join(cards) + """</main></body></html>"""
 
@@ -113,10 +111,7 @@ def run_demo(args: argparse.Namespace) -> dict[str, object]:
     image_files = []
     for item in result.items:
         filename = f"rank_{item.rank}_{item.item_id}.jpg"
-        pipeline.image_resolver.write_selected_image(
-            item.item_id,
-            output_dir / filename,
-        )
+        pipeline.image_resolver.write_selected_image(item.item_id, output_dir / filename)
         image_files.append(filename)
 
     max_samples = args.evaluation_max_samples
@@ -140,7 +135,7 @@ def run_demo(args: argparse.Namespace) -> dict[str, object]:
             "bytes_read": len(first_bytes),
             "jpeg_signature_valid": first_bytes.startswith(b"\xff\xd8\xff"),
         },
-        "evaluation3_fixture": {
+        "one_swap_fixture": {
             "split": args.evaluation_split,
             "sample_id": fixture["sample_id"],
             "outfit_item_ids": fixture["items"],
@@ -148,16 +143,14 @@ def run_demo(args: argparse.Namespace) -> dict[str, object]:
             "ground_truth_item_id": negative_metadata["original_item_id"],
         },
         "recommendations": public,
-        "evaluation3_metrics": evaluation,
+        "one_swap_metrics": evaluation,
         "score_fields_exposed": False,
     }
     (output_dir / "demo.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     (output_dir / "index.html").write_text(
-        _render_html(report, image_files),
-        encoding="utf-8",
+        _render_html(report, image_files), encoding="utf-8"
     )
     return report
 
@@ -171,4 +164,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
