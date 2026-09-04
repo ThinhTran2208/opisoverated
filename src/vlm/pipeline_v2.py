@@ -130,9 +130,14 @@ def _validate_diagnosis_observations(
             )
 
         indices = row.get("item_indices")
-        if not isinstance(indices, list) or not indices or len(indices) > item_count:
+        if (
+            not isinstance(indices, list)
+            or len(indices) < 2
+            or len(indices) > item_count
+        ):
             raise ValueError(
-                "diagnosis visual observation item_indices must be a bounded list"
+                "diagnosis visual observation item_indices must contain the problematic "
+                "item plus at least one other original outfit item"
             )
 
         normalized_indices: list[int] = []
@@ -252,6 +257,50 @@ def _validate_recommendation_observations(
             }
         )
     return normalized
+
+
+def _recommendation_visual_signature(row: Mapping[str, object]) -> tuple:
+    observations = row.get("visual_observations")
+    if not isinstance(observations, list):
+        return ()
+    observation_signature = tuple(
+        (
+            tuple(int(index) for index in observation["context_item_indices"]),
+            str(observation["dimension"]),
+            str(observation["effect"]),
+            str(observation["confidence"]),
+        )
+        for observation in observations
+    )
+    return (str(row.get("overall_visual_support")), observation_signature)
+
+
+def _validate_recommendation_independence(
+    recommendations: Sequence[Mapping[str, object]],
+) -> None:
+    """Reject the exact overconfident clone pattern seen in real-Qwen testing.
+
+    Identical low-confidence/ambiguous results remain valid because genuinely
+    similar candidates can be hard to distinguish. The guard only rejects the
+    narrow pattern where all Top-3 rows make the exact same non-ambiguous,
+    high-confidence visual claims, which is a strong signal of mechanical reuse.
+    """
+
+    if len(recommendations) != 3:
+        return
+    signatures = [_recommendation_visual_signature(row) for row in recommendations]
+    if not signatures[0] or len(set(signatures)) != 1:
+        return
+
+    overall = str(recommendations[0].get("overall_visual_support"))
+    observations = recommendations[0].get("visual_observations")
+    if overall == "ambiguous" or not isinstance(observations, list) or not observations:
+        return
+    if all(str(row.get("confidence")) == "high" for row in observations):
+        raise ValueError(
+            "Top-3 recommendation visual analyses are an exact cloned high-confidence "
+            "pattern; re-inspect each candidate independently"
+        )
 
 
 def validate_visual_analysis_v2(
@@ -378,6 +427,8 @@ def validate_visual_analysis_v2(
                 "visual_observations": observations,
             }
         )
+
+    _validate_recommendation_independence(normalized_recommendations)
 
     limitations = analysis.get("limitations")
     expected_limitations = list(required_limitations_v2(normalized_evidence))
