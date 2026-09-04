@@ -1,15 +1,25 @@
 # -*- coding: utf-8 -*-
-"""Deterministic validation for VLM visual analysis V2.
+"""VLM V2 validation, deterministic rendering, and handoff pipeline.
 
-This module is intentionally model-independent. Qwen may only emit a closed
-machine-readable visual analysis; every authoritative decision continues to come
-from frozen scorer + LOO + Recommendation V2 evidence.
+Qwen is restricted to closed-taxonomy visual analysis. Frozen scorer + LOO +
+Recommendation V2 remain authoritative for every numerical decision, candidate
+identity, and candidate rank. Human-facing Vietnamese prose is generated only by
+reviewed deterministic templates in this module.
 """
 
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+import hashlib
+from pathlib import Path
+from typing import Mapping, Protocol, Sequence
 
+from .config_v2 import VLM_PROTOCOL_VERSION_V2, validate_vlm_config_v2
+from .pipeline import (
+    CATEGORY_LABELS_VI,
+    CONFIDENCE_LABELS_VI,
+    DIMENSION_LABELS_VI,
+    extract_json_object,
+)
 from .prompt_v2 import (
     DIAGNOSIS_EFFECTS_V2,
     DIAGNOSIS_OVERALL_SUPPORT_V2,
@@ -18,9 +28,54 @@ from .prompt_v2 import (
     VISUAL_ANALYSIS_SCHEMA_VERSION_V2,
     VISUAL_CONFIDENCE_LEVELS_V2,
     VISUAL_DIMENSIONS_V2,
+    append_repair_request_v2,
+    build_qwen_messages_v2,
     required_limitations_v2,
 )
-from .schema_v2 import validate_vlm_evidence_v2
+from .schema_v2 import canonical_evidence_json_v2, validate_vlm_evidence_v2
+
+
+EXPLANATION_SCHEMA_VERSION_V2 = "vlm-explanation-v2"
+RUN_SCHEMA_VERSION_V2 = "vlm-run-v2"
+HANDOFF_SCHEMA_VERSION_V2 = "vlm-handoff-v2"
+
+DIAGNOSIS_EFFECT_LABELS_VI = {
+    "supports_loo": "ủng hộ chẩn đoán LOO",
+    "ambiguous": "chưa cho tín hiệu thị giác rõ ràng",
+    "contradicts_loo": "không ủng hộ chẩn đoán LOO",
+}
+DIAGNOSIS_OVERALL_LABELS_VI = {
+    "supports_loo": "Các quan sát thị giác có xu hướng ủng hộ chẩn đoán LOO.",
+    "ambiguous": "Các quan sát thị giác chưa đủ rõ để ủng hộ hoặc bác bỏ chẩn đoán LOO.",
+    "contradicts_loo": (
+        "Các quan sát thị giác không ủng hộ chẩn đoán LOO; quyết định problematic item "
+        "vẫn do frozen scorer và LOO quyết định."
+    ),
+}
+RECOMMENDATION_EFFECT_LABELS_VI = {
+    "supports_recommendation": "ủng hộ recommendation",
+    "ambiguous": "chưa cho tín hiệu thị giác rõ ràng",
+    "contradicts_recommendation": "không ủng hộ recommendation",
+}
+RECOMMENDATION_OVERALL_LABELS_VI = {
+    "supports_recommendation": "Các quan sát thị giác có xu hướng ủng hộ candidate này.",
+    "ambiguous": "Các quan sát thị giác chưa đủ rõ để ủng hộ hoặc bác bỏ candidate này.",
+    "contradicts_recommendation": (
+        "Các quan sát thị giác không ủng hộ candidate này; rank vẫn được giữ nguyên "
+        "vì frozen Recommendation V2 là nguồn quyết định authoritative."
+    ),
+}
+
+
+class VLMBackendV2(Protocol):
+    model_id: str
+
+    def generate(
+        self,
+        messages: Sequence[Mapping[str, object]],
+        generation: Mapping[str, object],
+    ) -> str:
+        """Return raw model text for one multimodal conversation."""
 
 
 def _enum(value: object, name: str, allowed: Sequence[str]) -> str:
@@ -203,13 +258,7 @@ def validate_visual_analysis_v2(
     analysis: Mapping[str, object],
     evidence: Mapping[str, object],
 ) -> dict:
-    """Hard-fail any VLM attempt to alter diagnosis or Recommendation V2.
-
-    The output schema contains no free-text field. Candidate identity and rank
-    must exactly match authoritative Recommendation V2 evidence. Recommendation
-    observations may reference only the outfit items that remain after removing
-    the LOO-selected problematic item.
-    """
+    """Hard-fail any VLM attempt to alter diagnosis or Recommendation V2."""
 
     normalized_evidence = validate_vlm_evidence_v2(evidence)
     if not isinstance(analysis, Mapping):
@@ -349,3 +398,262 @@ def validate_visual_analysis_v2(
         "recommendations": normalized_recommendations,
         "limitations": expected_limitations,
     }
+
+
+def render_explanation_vi_v2(
+    analysis: Mapping[str, object],
+    evidence: Mapping[str, object],
+) -> dict:
+    """Render all human-facing V2 prose from deterministic Vietnamese templates."""
+
+    normalized_evidence = validate_vlm_evidence_v2(evidence)
+    normalized_analysis = validate_visual_analysis_v2(analysis, normalized_evidence)
+
+    diagnosis = normalized_evidence["diagnosis"]
+    scorer = normalized_evidence["scorer"]
+    problem_index = int(diagnosis["problematic_item_index"])
+    problem_category = CATEGORY_LABELS_VI[str(diagnosis["problematic_category"])]
+    top_row = diagnosis["ranked_items"][0]
+
+    diagnosis_observations = []
+    for row in normalized_analysis["diagnosis"]["visual_observations"]:
+        indices = ", ".join(str(index) for index in row["item_indices"])
+        diagnosis_observations.append(
+            {
+                "item_indices": list(row["item_indices"]),
+                "dimension": row["dimension"],
+                "effect": row["effect"],
+                "confidence": row["confidence"],
+                "text": (
+                    f"Với item {indices}, {DIMENSION_LABELS_VI[row['dimension']]} "
+                    f"được phân loại là {DIAGNOSIS_EFFECT_LABELS_VI[row['effect']]} "
+                    f"với độ tin cậy thị giác {CONFIDENCE_LABELS_VI[row['confidence']]}."
+                ),
+            }
+        )
+
+    diagnosis_section = {
+        "headline": (
+            f"LOO xếp item {problem_index} ({problem_category}) là item problematic nhất."
+        ),
+        "evidence_summary": [
+            (
+                f"Khi bỏ item {problem_index}, compatibility logit đổi từ "
+                f"{float(scorer['compatibility_logit']):.4f} thành "
+                f"{float(top_row['without_item_logit']):.4f}, tương ứng LOO delta "
+                f"{float(top_row['loo_delta']):+.4f}."
+            ),
+            (
+                f"Khoảng cách LOO delta giữa Top-1 và Top-2 là "
+                f"{float(diagnosis['top1_top2_delta_gap']):.4f}; đây không phải xác suất "
+                "hay độ chắc chắn đã hiệu chỉnh."
+            ),
+        ],
+        "visual_summary": DIAGNOSIS_OVERALL_LABELS_VI[
+            normalized_analysis["diagnosis"]["overall_visual_support"]
+        ],
+        "visual_observations": diagnosis_observations,
+    }
+
+    analysis_by_id = {
+        str(row["item_id"]): row for row in normalized_analysis["recommendations"]
+    }
+    recommendation_sections = []
+    for candidate in normalized_evidence["recommendation"]["items"]:
+        item_id = str(candidate["item_id"])
+        visual = analysis_by_id[item_id]
+        rendered_observations = []
+        for row in visual["visual_observations"]:
+            context = ", ".join(str(index) for index in row["context_item_indices"])
+            rendered_observations.append(
+                {
+                    "context_item_indices": list(row["context_item_indices"]),
+                    "dimension": row["dimension"],
+                    "effect": row["effect"],
+                    "confidence": row["confidence"],
+                    "text": (
+                        f"So với các item context {context}, "
+                        f"{DIMENSION_LABELS_VI[row['dimension']]} được phân loại là "
+                        f"{RECOMMENDATION_EFFECT_LABELS_VI[row['effect']]} với độ tin cậy "
+                        f"thị giác {CONFIDENCE_LABELS_VI[row['confidence']]}."
+                    ),
+                }
+            )
+
+        recommendation_sections.append(
+            {
+                "rank": int(candidate["rank"]),
+                "item_id": item_id,
+                "master_category": str(candidate["master_category"]),
+                "coarse_category": str(candidate["coarse_category"]),
+                "compatibility_logit": float(candidate["compatibility_logit"]),
+                "improvement_logit": float(candidate["improvement_logit"]),
+                "headline": (
+                    f"Recommendation #{int(candidate['rank'])}: item {item_id}."
+                ),
+                "score_summary": (
+                    f"Frozen scorer cho compatibility logit "
+                    f"{float(candidate['compatibility_logit']):.4f}, cải thiện "
+                    f"{float(candidate['improvement_logit']):+.4f} so với outfit gốc. "
+                    "Các logit này không phải xác suất."
+                ),
+                "visual_summary": RECOMMENDATION_OVERALL_LABELS_VI[
+                    visual["overall_visual_support"]
+                ],
+                "visual_observations": rendered_observations,
+            }
+        )
+
+    uncertainty_parts = [
+        "Scorer/LOO/recommendation logits là đầu ra chưa hiệu chỉnh, không phải xác suất.",
+        "Các nhãn thị giác của Qwen là suy luận từ ảnh theo taxonomy đóng.",
+        "Qwen không được thay đổi problematic item, candidate identity hoặc Top-3 rank.",
+    ]
+    if diagnosis["uses_two_item_extrapolation"]:
+        uncertainty_parts.append(
+            "Outfit gốc có 3 item nên LOO phải chấm subset còn 2 item; đây là two-item extrapolation."
+        )
+
+    return {
+        "schema_version": EXPLANATION_SCHEMA_VERSION_V2,
+        "problematic_item_index": problem_index,
+        "problematic_item_id": str(diagnosis["problematic_item_id"]),
+        "headline": diagnosis_section["headline"],
+        "diagnosis": diagnosis_section,
+        "recommendations": recommendation_sections,
+        "explanation": (
+            "Frozen scorer và LOO quyết định problematic item; Recommendation V2 quyết định "
+            "Top-3 candidate và thứ tự. Qwen chỉ bổ sung các quan sát thị giác đã qua validator."
+        ),
+        "uncertainty_note": " ".join(uncertainty_parts),
+        "limitations": list(normalized_analysis["limitations"]),
+    }
+
+
+def build_handoff_result_v2(
+    explanation: Mapping[str, object],
+    *,
+    model_id: str,
+    generation_attempts: int,
+) -> dict:
+    """Build a compact deploy-facing result without raw Qwen text or private evidence."""
+
+    if not isinstance(explanation, Mapping):
+        raise TypeError("explanation must be a mapping")
+    required = {
+        "schema_version",
+        "problematic_item_index",
+        "problematic_item_id",
+        "headline",
+        "diagnosis",
+        "recommendations",
+        "explanation",
+        "uncertainty_note",
+        "limitations",
+    }
+    if set(explanation) != required or explanation.get("schema_version") != EXPLANATION_SCHEMA_VERSION_V2:
+        raise ValueError("explanation is not a canonical VLM explanation V2 payload")
+    if isinstance(generation_attempts, bool) or not isinstance(generation_attempts, int) or generation_attempts < 1:
+        raise ValueError("generation_attempts must be an integer >= 1")
+    if not isinstance(model_id, str) or not model_id.strip():
+        raise ValueError("model_id must be a non-empty string")
+
+    recommendations = explanation["recommendations"]
+    if not isinstance(recommendations, list) or len(recommendations) != 3:
+        raise ValueError("handoff requires exactly three recommendation rows")
+
+    return {
+        "schema_version": HANDOFF_SCHEMA_VERSION_V2,
+        "protocol_version": VLM_PROTOCOL_VERSION_V2,
+        "model_id": model_id,
+        "generation_attempts": generation_attempts,
+        "problematic_item_index": int(explanation["problematic_item_index"]),
+        "problematic_item_id": str(explanation["problematic_item_id"]),
+        "headline": str(explanation["headline"]),
+        "diagnosis": explanation["diagnosis"],
+        "recommendations": recommendations,
+        "explanation": str(explanation["explanation"]),
+        "uncertainty_note": str(explanation["uncertainty_note"]),
+        "limitations": list(explanation["limitations"]),
+    }
+
+
+class VLMExplanationPipelineV2:
+    """End-to-end VLM V2 wrapper with one deterministic schema-repair retry."""
+
+    def __init__(self, backend: VLMBackendV2, config: Mapping[str, object]) -> None:
+        self.backend = backend
+        self.config = validate_vlm_config_v2(config)
+        if backend.model_id != self.config["model"]["id"]:
+            raise ValueError("Backend model_id does not match the frozen VLM V2 config")
+
+    def explain(
+        self,
+        evidence: Mapping[str, object],
+        outfit_image_refs: Sequence[str | Path],
+        recommendation_image_refs: Mapping[str, str | Path],
+        *,
+        must_exist: bool = True,
+    ) -> dict:
+        """Run Qwen -> validator -> renderer and return internal + handoff results."""
+
+        normalized_evidence = validate_vlm_evidence_v2(evidence)
+        vision = self.config["vision"]
+        messages = build_qwen_messages_v2(
+            normalized_evidence,
+            outfit_image_refs,
+            recommendation_image_refs,
+            min_pixels=int(vision["min_pixels"]),
+            max_pixels=int(vision["max_pixels"]),
+            must_exist=must_exist,
+        )
+        generation = dict(self.config["generation"])
+        max_retries = int(generation.pop("max_validation_retries"))
+
+        raw_response = ""
+        last_error: Exception | None = None
+        for attempt in range(max_retries + 1):
+            raw_response = self.backend.generate(messages, generation)
+            try:
+                parsed = extract_json_object(raw_response)
+                visual_analysis = validate_visual_analysis_v2(parsed, normalized_evidence)
+                break
+            except (TypeError, ValueError) as error:
+                last_error = error
+                if attempt >= max_retries:
+                    raise ValueError(
+                        "VLM V2 output failed validation after "
+                        f"{attempt + 1} attempt(s): {error}"
+                    ) from error
+                messages = append_repair_request_v2(
+                    messages,
+                    raw_response=raw_response,
+                    validation_error=str(error),
+                )
+        else:  # pragma: no cover
+            raise RuntimeError(f"Unreachable VLM V2 validation state: {last_error}")
+
+        rendered_explanation = render_explanation_vi_v2(
+            visual_analysis, normalized_evidence
+        )
+        evidence_json = canonical_evidence_json_v2(normalized_evidence)
+        generation_attempts = attempt + 1
+        handoff = build_handoff_result_v2(
+            rendered_explanation,
+            model_id=self.backend.model_id,
+            generation_attempts=generation_attempts,
+        )
+        run = {
+            "schema_version": RUN_SCHEMA_VERSION_V2,
+            "protocol_version": VLM_PROTOCOL_VERSION_V2,
+            "model_id": self.backend.model_id,
+            "generation_attempts": generation_attempts,
+            "evidence_sha256": hashlib.sha256(evidence_json.encode("utf-8")).hexdigest(),
+            "evidence": normalized_evidence,
+            "visual_analysis": visual_analysis,
+            "explanation": rendered_explanation,
+            "handoff": handoff,
+        }
+        if self.config["output"]["include_raw_response"]:
+            run["raw_response"] = raw_response
+        return run
