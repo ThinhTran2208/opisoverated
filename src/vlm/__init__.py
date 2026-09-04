@@ -21,8 +21,10 @@ from .pipeline_v2 import (
     validate_visual_analysis_v2,
 )
 from .prompt_v2 import (
+    PROMPT_CONTEXT_SCHEMA_VERSION_V2,
     VISUAL_ANALYSIS_SCHEMA_VERSION_V2,
     append_repair_request_v2,
+    build_prompt_context_v2,
     build_qwen_messages_v2,
     expected_output_shape_v2,
     required_limitations_v2,
@@ -56,6 +58,7 @@ __all__ = [
     "EXPLANATION_SCHEMA_VERSION_V2",
     "GROUNDING_RULES_V2",
     "HANDOFF_SCHEMA_VERSION_V2",
+    "PROMPT_CONTEXT_SCHEMA_VERSION_V2",
     "Qwen3VLBackendV2",
     "RUN_SCHEMA_VERSION_V2",
     "USER_FACING_SCHEMA_VERSION_V2",
@@ -66,6 +69,7 @@ __all__ = [
     "VLM_PROTOCOL_VERSION_V2",
     "append_repair_request_v2",
     "build_handoff_result_v2",
+    "build_prompt_context_v2",
     "build_qwen_messages_v2",
     "build_recommendation_evidence",
     "build_vlm_evidence",
