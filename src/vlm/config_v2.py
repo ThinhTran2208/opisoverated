@@ -18,7 +18,7 @@ from .config import validate_vlm_config
 
 
 VLM_PROTOCOL_VERSION_V2 = "vlm-explanation-v2"
-CANONICAL_MAX_NEW_TOKENS_V2 = 768
+CANONICAL_MAX_NEW_TOKENS_V2 = 1024
 
 
 def validate_vlm_config_v2(config: Mapping[str, object]) -> dict:
