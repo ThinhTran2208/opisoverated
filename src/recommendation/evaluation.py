@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Evaluation3 metrics and ordered trace export for Recommendation V1."""
+"""Polyvore one-item-swap recovery metrics for Recommendation V2."""
 from __future__ import annotations
 
 import argparse
@@ -11,7 +11,7 @@ from typing import Mapping, Sequence
 from .pipeline import RecommendationPipeline
 from .trace import CandidateTraceWriter, candidate_trace_record
 
-EVALUATION_PROTOCOL = "evaluation3-one-item-swap-v1"
+EVALUATION_PROTOCOL = "polyvore-one-item-swap-recovery-v2"
 DEFAULT_EPSILON = 0.0
 
 
@@ -20,6 +20,8 @@ def _rank(items: Sequence[str], ground_truth: str) -> int | None:
 
 
 class Evaluation3Evaluator:
+    """Legacy class name; evaluates Polyvore synthetic one-swap recovery."""
+
     def __init__(self, pipeline, *, epsilon: float = DEFAULT_EPSILON) -> None:
         self.pipeline = pipeline
         self.epsilon = float(epsilon)
@@ -130,17 +132,21 @@ class Evaluation3Evaluator:
                 rank = _rank(order, ground_truth)
                 for k in (50, 100, 200): hits[stage][k] += int(rank is not None and rank <= k)
             rerank_rank = _rank(all_reranked, ground_truth)
-            hit1 += int(rerank_rank == 1); hit3 += int(rerank_rank is not None and rerank_rank <= 3)
+            hit1 += int(rerank_rank == 1)
+            hit3 += int(rerank_rank is not None and rerank_rank <= 3)
             rr_sum += 0.0 if rerank_rank is None else 1.0 / rerank_rank
-            if ground_truth not in hybrid_order: failures["ground_truth_not_in_hybrid_top200"] += 1
-            elif ground_truth not in final_order: failures["ground_truth_in_hybrid_not_final_top3"] += 1
+            if ground_truth not in hybrid_order:
+                failures["ground_truth_not_in_hybrid_top200"] += 1
+            elif ground_truth not in final_order:
+                failures["ground_truth_in_hybrid_not_final_top3"] += 1
             for candidate in reranked[:3]:
                 evaluated_recommendations += 1
                 successful += int(candidate.improvement_logit > self.epsilon)
             trace = candidate_trace_record(
                 **base, item_ids=item_order, context_ids=context_order,
                 hybrid_ids=hybrid_order, final_ids=final_order,
-                candidate_counts={"item_retrieval": len(item_order), "context_retrieval": len(context_order),
+                candidate_counts={"category_pool": retrieval.category_pool_count,
+                                  "item_retrieval": len(item_order), "context_retrieval": len(context_order),
                                   "hybrid_top200": len(hybrid_order), "reranked": len(reranked), "final": len(final_order)},
                 excluded_counts={"master_category": retrieval.master_category_filtered_count,
                                  "missing_metadata": retrieval.missing_metadata_count,
@@ -151,7 +157,8 @@ class Evaluation3Evaluator:
 
         runtime_failures = failures["scorer_error"] + failures["image_read_error"]
         evaluated = len(negatives) - sum(excluded.values()) - runtime_failures
-        if not evaluated: raise ValueError("Evaluation3 has no eligible rows")
+        if not evaluated:
+            raise ValueError("One-item-swap evaluation has no eligible rows")
         ratio = lambda n: n / evaluated
         checks = coverage["required_item_checks"]
         return {
@@ -180,38 +187,48 @@ def report_markdown(result: Mapping[str, object]) -> str:
         m = retrieval[key]
         rows.append(f"| {label} | {f(m['recall_at_50'])} | {f(m['recall_at_100'])} | {f(m['recall_at_200'])} | N/A | N/A | N/A |")
     rows.append(f"| Hybrid + scorer | N/A | N/A | N/A | {f(reranking['hit_at_1'])} | {f(reranking['hit_at_3'])} | {f(reranking['mrr'])} |")
-    return "\n".join(["# Recommendation V1 — Evaluation3", "",
+    return "\n".join(["# Recommendation V2 — Polyvore one-item-swap recovery", "",
         f"Split: `{result['split']}`. Epsilon cố định: `{result['epsilon']}` trên `compatibility_logit`.", "",
         "| Stage | Recall@50 | Recall@100 | Recall@200 | Hit@1 | Hit@3 | MRR |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: |", *rows, "",
-        "Evaluation3 hiện tại mỗi query có một ground-truth item, nên Recall@K và Hit@K có cùng giá trị số ở retrieval stage.", "",
+        "Ground truth là original item đã bị swap ra. Recall/Hit ở đây đo exact original-item recovery, không phải human recommendation quality.", "",
         f"- Tổng query: {result['total_queries']}", f"- Query hợp lệ: {result['valid_queries']}",
         f"- Query bị loại: {result['excluded_queries']}",
         f"- Replacement Success Rate: {f(result['replacement_quality']['success_rate'])}",
         f"- Coverage: `{json.dumps(result['coverage'], ensure_ascii=False)}`",
         f"- Excluded: `{json.dumps(result['excluded'], ensure_ascii=False)}`",
         f"- Failures: `{json.dumps(result['failures'], ensure_ascii=False)}`", "",
-        "Score chỉ tồn tại trong evaluation nội bộ; public response và HTML demo không chứa score."]) + "\n"
+        "Score chỉ tồn tại trong evaluation nội bộ; public response không chứa score."]) + "\n"
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run Recommendation V1 Evaluation3")
-    parser.add_argument("--ml-zip", required=True); parser.add_argument("--image-zip", action="append", required=True)
-    parser.add_argument("--config", default=str(Path(__file__).resolve().parents[2] / "configs" / "recommendation_hybrid_v1.json"))
-    parser.add_argument("--split", choices=("valid", "test"), default="test"); parser.add_argument("--device", default="cpu")
-    parser.add_argument("--max-samples", type=int, default=0); parser.add_argument("--output-dir", default="outputs")
+    parser = argparse.ArgumentParser(description="Run Recommendation V2 one-item-swap recovery evaluation")
+    parser.add_argument("--ml-zip", required=True)
+    parser.add_argument("--image-zip", action="append", required=True)
+    parser.add_argument("--config", default=str(Path(__file__).resolve().parents[2] / "configs" / "recommendation_category_aware_v2.json"))
+    parser.add_argument("--split", choices=("valid", "test"), default="test")
+    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--max-samples", type=int, default=0)
+    parser.add_argument("--output-dir", default="outputs")
     args = parser.parse_args()
     pipeline = RecommendationPipeline.load_from_archives(args.config, ml_zip_path=args.ml_zip, image_zip_paths=args.image_zip, device=args.device)
-    out = Path(args.output_dir); out.mkdir(parents=True, exist_ok=True)
+    out = Path(args.output_dir)
+    out.mkdir(parents=True, exist_ok=True)
     trace_path = out / "recommendation_candidate_records.jsonl"
     trace_path.write_text("", encoding="utf-8")
-    result = Evaluation3Evaluator(pipeline).evaluate(pipeline.artifact_bundle.load_scorer_ready(args.split),
-        split=args.split, max_samples=None if args.max_samples == 0 else args.max_samples,
-        trace_writer=CandidateTraceWriter(trace_path))
-    serializable = dict(result); serializable.pop("records", None)
+    result = Evaluation3Evaluator(pipeline).evaluate(
+        pipeline.artifact_bundle.load_scorer_ready(args.split),
+        split=args.split,
+        max_samples=None if args.max_samples == 0 else args.max_samples,
+        trace_writer=CandidateTraceWriter(trace_path),
+    )
+    serializable = dict(result)
+    serializable.pop("records", None)
     (out / "recommendation_evaluation_results.json").write_text(json.dumps(serializable, ensure_ascii=False, indent=2), encoding="utf-8")
     (out / "recommendation_evaluation_report.md").write_text(report_markdown(serializable), encoding="utf-8")
-    print(json.dumps(serializable, ensure_ascii=False, indent=2)); return 0
+    print(json.dumps(serializable, ensure_ascii=False, indent=2))
+    return 0
 
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())
