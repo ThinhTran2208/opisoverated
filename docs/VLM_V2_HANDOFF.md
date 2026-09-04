@@ -1,6 +1,6 @@
 # VLM V2 Renderer and Handoff
 
-## Completed baseline flow
+## Baseline flow
 
 ```text
 Frozen scorer + LOO
@@ -11,11 +11,11 @@ vlm-evidence-v2
         ↓
 original garment crops + Top-3 candidate images
         ↓
-Qwen3-VL closed-taxonomy visual analysis
+Qwen3-VL closed-taxonomy visual evidence
         ↓
 validate_visual_analysis_v2(...)
         ↓
-internal deterministic explanation / handoff
+internal QA/debug analysis
         ↓
 render_user_facing_vi_v2(...)
         ↓
@@ -25,23 +25,36 @@ vlm-user-facing-v2
 The optional full original outfit image is not part of this baseline. It remains
 a future ablation.
 
-## Internal renderer vs end-user renderer
+## Decision authority vs visual evidence
 
-The VLM pipeline intentionally keeps two different presentation layers.
+The production contract is intentionally asymmetric:
 
-### Internal/debug layer
+- frozen scorer + LOO decide the problematic original item;
+- Recommendation V2 decides the authoritative Top-3 candidate identities and rank;
+- Qwen does **not** make a second fashion decision and does **not** rerank anything;
+- Qwen only extracts image-grounded visual evidence that can help explain the already-fixed decisions.
 
-`render_explanation_vi_v2(...)` and `run["handoff"]` preserve implementation
-metadata useful for debugging, integration, and audit. They may contain scorer
-or LOO terminology and should not be shown directly to a normal user.
+The internal Qwen schema still allows `supports_*`, `ambiguous`, and `contradicts_*`
+labels for QA. Those labels are not a user-facing vote on the upstream result.
+`ambiguous` or `contradicts_*` never authorizes the VLM to remove a candidate,
+change rank, or replace the diagnosed item.
 
-### End-user layer
+Prompt policy now asks Qwen to first seek one concrete positive visible relation
+for each recommendation candidate. If no clear positive reason is visible, Qwen
+should return `ambiguous` with no filler observations rather than inventing a
+justification or producing weak negative commentary. Clear contradictions remain
+available only as internal QA evidence.
 
-`render_user_facing_vi_v2(...)` is the deploy-facing Vietnamese UI payload. It
-keeps the authoritative problematic item identity and Recommendation Top-3 item
-IDs/ranks so the frontend can bind the correct images, but the prose deliberately
-hides implementation vocabulary such as LOO, Qwen, logits, validator names, and
-probability semantics.
+## Internal/debug layer
+
+`render_explanation_vi_v2(...)`, raw visual analysis, evidence, and the existing
+internal handoff may preserve scorer/LOO terminology, logits, confidence labels,
+and visual disagreement for debugging or audit. They must not be rendered
+directly to a normal user.
+
+## End-user layer
+
+`render_user_facing_vi_v2(...)` is the deploy-facing Vietnamese UI payload.
 
 Use:
 
@@ -56,73 +69,57 @@ user_result = render_user_facing_vi_v2(
 
 The result schema is `vlm-user-facing-v2` and contains:
 
-- one final plain-language `text` string suitable for direct display;
-- the problematic item identity/category and structured copy for UI layout;
+- one final `text` string suitable for direct display;
+- the authoritative problematic item identity/category;
 - exactly three authoritative replacement candidates in frozen rank order;
-- a safe display name derived from coarse category, e.g. `Mẫu túi 1`, `Mẫu túi 2`, `Mẫu túi 3`;
-- one concise visual reason for each candidate;
-- a plain-language caution when visual evidence and the compatibility decision do not fully agree.
+- safe display names derived from coarse category, e.g. `Mẫu túi 1`, `Mẫu túi 2`, `Mẫu túi 3`;
+- an optional positive visual reason when Qwen provides grounded support;
+- a ranking-based fallback sentence when Qwen cannot provide a positive visual reason;
+- machine-only `item_id` and `rank` so frontend can bind the correct recommendation image.
 
-The candidate `item_id` and `rank` stay in the machine payload only so the frontend can bind the correct recommendation image. The renderer does not ask Qwen to invent a specific subtype such as shoulder bag vs backpack; the displayed image is the source of truth for the exact visual item.
+User-facing prose deliberately hides implementation vocabulary such as LOO,
+Qwen, logits, validator names, and raw confidence taxonomy. Raw
+`compatibility_logit`, `improvement_logit`, and score summaries are absent from
+`vlm-user-facing-v2`.
 
-Raw `compatibility_logit`, `improvement_logit`, score summaries, model names, and internal validation details are intentionally absent from `vlm-user-facing-v2`. They may remain in internal/debug artifacts and must not be rendered to the end user.
+Internal visual disagreement is also not surfaced as a counter-argument to the
+user. If Qwen marks a recommendation `ambiguous` or `contradicts_recommendation`,
+the renderer does not say that the recommendation is weak or that the system
+disagrees with itself. It keeps the authoritative recommendation and simply
+omits an unsupported visual justification.
 
-Example final text:
+Example for a case where all three candidate improvement logits are positive:
 
 ```text
-Chiếc túi hiện tại được hệ thống đánh giá là món kém phù hợp nhất với outfit.
-Tuy nhiên, khi nhìn riêng về mặt thị giác, món này không có dấu hiệu lệch outfit quá rõ.
-Bạn có thể thử thay món này bằng một trong ba mẫu túi bên dưới để outfit hài hòa hơn.
-Mẫu túi 1 phù hợp về mặt thị giác vì màu sắc hài hòa với các món còn lại.
-Mẫu túi 2 chưa cho thấy ưu điểm thị giác đủ rõ để nổi bật hơn các lựa chọn còn lại.
-Mẫu túi 3 phù hợp về mặt thị giác vì phom dáng giúp outfit cân đối hơn.
+Chiếc túi hiện tại là món được đánh giá kém phù hợp nhất và được ưu tiên thay trong outfit.
+Đây là món được ưu tiên thay để cải thiện độ phù hợp tổng thể của outfit.
+Cả ba mẫu túi bên dưới đều được đánh giá phù hợp hơn khi thay cho chiếc túi hiện tại.
+Mẫu túi 1 là lựa chọn được xếp hạng đầu tiên; màu sắc phối hợp tốt với các món còn lại.
+Mẫu túi 2 là phương án thay thế thứ hai và được đánh giá phù hợp hơn chiếc túi hiện tại.
+Mẫu túi 3 là phương án thay thế thứ ba; phom dáng giúp tổng thể outfit cân đối hơn.
+Bạn có thể tham khảo ba phương án trên để thay cho chiếc túi hiện tại và chọn mẫu phù hợp nhất với sở thích của mình.
 ```
 
-A visual contradiction never changes the upstream diagnosis or recommendation
-rank. The user-facing renderer instead phrases disagreement as uncertainty, for
-example that the image itself does not show an obvious mismatch and the result
-should be treated as a suggestion rather than a certain conclusion.
+If a candidate does not improve on the current outfit score, the renderer does
+not falsely claim it is better; it only says that it is one of the highest-ranked
+available replacement candidates.
 
 ## Frontend image binding
 
-Recommendation images are a frontend/deploy responsibility. The frontend should
-bind each image using the authoritative candidate `item_id` and `rank` from the
-same Recommendation V2 result. The visible card can therefore show, for example:
+Recommendation images are a frontend/deploy responsibility. The frontend binds
+each recommendation image using the authoritative candidate `item_id` and `rank`
+from the same Recommendation V2 result.
+
+For example:
 
 ```text
 [Mẫu túi 1 image]
 Mẫu túi 1
-Màu sắc hài hòa với các món còn lại.
+Màu sắc phối hợp tốt với các món còn lại.
 ```
 
 The VLM does not generate recommendation images and does not change candidate
 identity or order.
-
-## End-to-end VLM V2 wrapper
-
-Use:
-
-```python
-from src.vlm import VLMExplanationPipelineV2, load_vlm_config_v2
-
-config = load_vlm_config_v2("configs/vlm_qwen3_vl_4b_instruct_v2.json")
-pipeline = VLMExplanationPipelineV2(qwen_backend, config)
-
-run = pipeline.explain(
-    evidence,
-    outfit_image_refs,
-    recommendation_image_refs,
-)
-```
-
-`recommendation_image_refs` is keyed by authoritative candidate `item_id`, not
-position, to prevent accidental rank/image mismatch.
-
-The wrapper performs one allowed repair retry and returns the internal
-`vlm-run-v2` record containing evidence hash, validated visual analysis,
-deterministic internal explanation, and the existing integration handoff. For
-end-user UI, render `vlm-user-facing-v2` from the validated `visual_analysis` and
-`evidence` as shown above.
 
 ## Runtime configuration
 
@@ -133,20 +130,24 @@ V2 uses `configs/vlm_qwen3_vl_4b_instruct_v2.json` with:
 - canonical 262,144 pixels per image;
 - greedy decoding;
 - one schema-repair retry;
-- a V2 generation budget sized for diagnosis plus three recommendation rows.
+- V2 generation budget for diagnosis plus three recommendation rows.
 
 T4 notebook runs may use a lower per-image pixel budget as a functional-test
 override. That override is not the canonical deploy configuration.
 
 ## Verification status
 
-Real Qwen execution has successfully passed the V2 prompt, validator, renderer,
-and Recommendation Top-3 grounding on NB10. The user-facing renderer is a
-separate deterministic layer and does not require another Qwen generation to
-render an already validated run.
+A real Qwen NB10 smoke test previously passed schema validation and Top-3
+grounding. The explanation-role prompt and user-facing renderer were subsequently
+revised after manual review showed that surfacing visual disagreement produced
+confusing end-user copy.
 
-The known low-severity mapping leakage-hardening note in `schema_v2.py` is still
-left for final review: forbidden top-level evaluation fields on a mapping input
-should ideally hard-fail before allowed fields are extracted. The current code
-drops those extra top-level fields before evidence reaches Qwen, so this note is
-contract hardening rather than a known runtime leakage path.
+Therefore the revised prompt policy still requires another real-Qwen smoke run,
+followed by batch failure/repair-rate measurement and manual quality review before
+final freeze.
+
+The known low-severity mapping leakage-hardening note in `schema_v2.py` remains:
+forbidden top-level evaluation fields on a Mapping input should ideally hard-fail
+before allowed fields are extracted. The current code drops those extra fields
+before evidence reaches Qwen, so this is contract hardening rather than a known
+runtime leakage path.
