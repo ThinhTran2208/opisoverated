@@ -7,18 +7,21 @@ Frozen scorer + LOO
         +
 Recommendation V2 Top-3
         ↓
-vlm-evidence-v2
+full internal vlm-evidence-v2
+(raw logits kept for audit/validation)
         ↓
+score-free vlm-prompt-context-v2
+        +
 original garment crops + Top-3 candidate images
         ↓
 Qwen3-VL closed-taxonomy visual evidence
         ↓
 validate_visual_analysis_v2(...)
         ↓
-internal QA/debug analysis
-        ↓
-render_user_facing_vi_v2(...)
-        ↓
+internal QA/debug explanation
+        +
+score-free integration handoff
+        +
 vlm-user-facing-v2
 ```
 
@@ -41,22 +44,71 @@ change rank, or replace the diagnosed item.
 
 Prompt policy asks Qwen to first seek one concrete positive visible relation for
 each recommendation candidate. If no clear positive reason is visible, Qwen
-should return `ambiguous` with no filler observations rather than inventing a
+returns `ambiguous` with no filler observations rather than inventing a
 justification or producing weak negative commentary. Clear contradictions remain
 available only as internal QA evidence.
 
+## Raw-score boundary
+
+Full `vlm-evidence-v2` keeps scorer/LOO/recommendation numerical values because
+they are needed for deterministic validation, audit, and the ranking-based
+fallback logic used by the renderer.
+
+Those raw values are **not sent to Qwen**. `build_prompt_context_v2(...)` projects
+the full evidence into `vlm-prompt-context-v2`, which contains only:
+
+- original item index / ID / coarse category;
+- authoritative problematic item index / ID / category;
+- the two-item-extrapolation flag when applicable;
+- Top-3 recommendation rank / ID / category metadata.
+
+No `compatibility_logit`, `improvement_logit`, LOO delta, without-item score,
+checkpoint score, or other raw numerical scorer state is present in the prompt
+context. This reduces numerical anchoring and keeps visual evidence image-driven.
+
+## Leakage contract
+
+For plain Mapping recommendation inputs, the **entire raw nested mapping is
+scanned before public/internal fields are projected**. Any forbidden benchmark or
+evaluation field such as `original_item_id`, `ground_truth_item_id`, `hit_at_3`,
+`mrr`, etc. causes a fail-fast `ValueError`.
+
+This prevents adapter projection from silently dropping benchmark fields before
+the leakage scanner can see them.
+
 ## Internal/debug layer
 
-`render_explanation_vi_v2(...)`, raw visual analysis, evidence, and the existing
-internal handoff may preserve scorer/LOO terminology, logits, confidence labels,
-and visual disagreement for debugging or audit. They must not be rendered
-directly to a normal user.
+The following remain internal/audit artifacts and may contain technical terms or
+raw scores:
+
+```text
+run["evidence"]
+run["visual_analysis"]
+run["explanation"]
+run["raw_response"]   # only when configured
+```
+
+`render_explanation_vi_v2(...)` is explicitly an internal renderer. It may still
+show LOO deltas, compatibility logits, Qwen taxonomy, and confidence labels for
+debugging.
+
+## Score-free integration handoff
+
+`run["handoff"]` uses schema `vlm-handoff-v2` and is now score-free. It preserves
+only integration-safe data such as:
+
+- problematic item ID/index;
+- Top-3 item IDs, rank, category metadata;
+- validated visual summaries/observations;
+- machine-readable limitations.
+
+It does **not** contain raw compatibility/improvement logits, LOO deltas, score
+summaries, model ID, generation attempts, raw response, or full evidence.
 
 ## End-user layer
 
-`render_user_facing_vi_v2(...)` is the deploy-facing Vietnamese UI payload.
-
-Use:
+`run["user_facing"]` is produced automatically by the V2 pipeline. It is the
+payload intended for the UI. The same payload can still be recreated directly:
 
 ```python
 from src.vlm import render_user_facing_vi_v2
@@ -73,34 +125,29 @@ The result schema is `vlm-user-facing-v2` and contains:
 - the authoritative problematic item identity/category;
 - exactly three authoritative replacement candidates in frozen rank order;
 - safe display names derived from coarse category, e.g. `Mẫu túi 1`, `Mẫu túi 2`, `Mẫu túi 3`;
-- an optional positive visual reason when Qwen provides grounded support;
+- a positive visual reason only when Qwen provides grounded support;
 - a ranking-based fallback sentence when Qwen cannot provide a positive visual reason;
 - machine-only `item_id` and `rank` so frontend can bind the correct recommendation image.
 
-User-facing prose deliberately hides implementation vocabulary such as LOO,
-Qwen, logits, validator names, and raw confidence taxonomy. Raw
-`compatibility_logit`, `improvement_logit`, and score summaries are absent from
-`vlm-user-facing-v2`.
+User-facing prose hides implementation vocabulary such as LOO, Qwen, logits,
+validator names, and raw confidence taxonomy. Internal visual disagreement is
+not surfaced as a counter-argument to the user.
 
-Internal visual disagreement is not surfaced as a counter-argument to the user.
-If Qwen marks a diagnosis or recommendation `ambiguous`/`contradicts_*`, the
-renderer simply omits unsupported visual explanation. It never tells the user
-that the system is arguing with itself.
-
-Example for a case where all three candidate improvement logits are positive:
+Example for the bag case used during manual review:
 
 ```text
-Chiếc túi hiện tại là món được đánh giá kém phù hợp nhất và được ưu tiên thay trong outfit.
-Cả ba mẫu túi bên dưới đều được đánh giá phù hợp hơn khi thay cho chiếc túi hiện tại.
-Mẫu túi 1 là lựa chọn được xếp hạng đầu tiên; màu sắc phối hợp tốt với các món còn lại.
-Mẫu túi 2 là phương án thay thế thứ hai và được đánh giá phù hợp hơn chiếc túi hiện tại.
-Mẫu túi 3 là phương án thay thế thứ ba; phom dáng giúp tổng thể outfit cân đối hơn.
-Bạn có thể tham khảo ba phương án trên để thay cho chiếc túi hiện tại và chọn mẫu phù hợp nhất với sở thích của mình.
+Trong outfit này, chiếc túi hiện tại là món được ưu tiên thay.
+Đây là món có ảnh hưởng lớn nhất đến mức độ phù hợp của outfit trong đánh giá hiện tại.
+Ba mẫu túi bên dưới đều là những phương án được đánh giá phù hợp hơn với outfit khi thay cho chiếc túi hiện tại.
+Mẫu túi 1 là lựa chọn ưu tiên nhất, với màu sắc phối hợp tốt với các món còn lại.
+Mẫu túi 2 là lựa chọn thứ hai và cũng được đánh giá phù hợp hơn với outfit so với chiếc túi hiện tại.
+Mẫu túi 3 là lựa chọn thứ ba, với phom dáng giúp tổng thể outfit cân đối hơn.
+Bạn có thể tham khảo ba mẫu trên để thay cho chiếc túi hiện tại và chọn phương án phù hợp nhất với sở thích của mình.
 ```
 
 If a candidate does not improve on the current outfit score, the renderer does
-not falsely claim it is better; it only says that it is one of the highest-ranked
-available replacement candidates.
+not falsely claim it is better; it only says that it is one of the prioritized
+replacement candidates.
 
 ## Frontend image binding
 
@@ -113,7 +160,7 @@ For example:
 ```text
 [Mẫu túi 1 image]
 Mẫu túi 1
-Màu sắc phối hợp tốt với các món còn lại.
+Mẫu túi 1 là lựa chọn ưu tiên nhất, với màu sắc phối hợp tốt với các món còn lại.
 ```
 
 The VLM does not generate recommendation images and does not change candidate
@@ -130,22 +177,18 @@ V2 uses `configs/vlm_qwen3_vl_4b_instruct_v2.json` with:
 - one schema-repair retry;
 - V2 generation budget for diagnosis plus three recommendation rows.
 
-T4 notebook runs may use a lower per-image pixel budget as a functional-test
-override. That override is not the canonical deploy configuration.
+For a local/demo deployment, the team can use whichever GPU the active Colab Pro
+session provides. If the canonical 262,144-pixel budget does not fit a given GPU,
+a lower visual budget can be used as an explicit runtime override for the demo;
+this is an infrastructure choice and does not change the VLM evidence contract.
 
 ## Verification status
 
 A real Qwen NB10 smoke test previously passed schema validation and Top-3
-grounding. The explanation-role prompt and user-facing renderer were subsequently
-revised after manual review showed that surfacing visual disagreement produced
-confusing end-user copy.
+grounding. After manual review, the prompt, leakage boundary, prompt projection,
+handoff boundary, and user-facing renderer were revised.
 
-Therefore the revised prompt policy still requires another real-Qwen smoke run,
-followed by batch failure/repair-rate measurement and manual quality review before
-final freeze.
-
-The known low-severity mapping leakage-hardening note in `schema_v2.py` remains:
-forbidden top-level evaluation fields on a Mapping input should ideally hard-fail
-before allowed fields are extracted. The current code drops those extra fields
-before evidence reaches Qwen, so this is contract hardening rather than a known
-runtime leakage path.
+Before final freeze, run the revised prompt on real Qwen again, then measure
+batch failure/repair rate and perform manual quality review across multiple
+samples. Production HTTP wiring can proceed against `run["handoff"]` and
+`run["user_facing"]` while that validation is being completed.
