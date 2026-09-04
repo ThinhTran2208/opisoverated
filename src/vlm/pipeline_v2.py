@@ -1,10 +1,16 @@
 # -*- coding: utf-8 -*-
-"""VLM V2 validation, deterministic rendering, and handoff pipeline.
+"""VLM V2 validation, internal rendering, and safe handoff pipeline.
 
-Qwen is restricted to closed-taxonomy visual analysis. Frozen scorer + LOO +
+Qwen is restricted to closed-taxonomy visual evidence. Frozen scorer + LOO +
 Recommendation V2 remain authoritative for every numerical decision, candidate
-identity, and candidate rank. Human-facing Vietnamese prose is generated only by
-reviewed deterministic templates in this module.
+identity, and candidate rank.
+
+Boundary:
+- ``run['evidence']``, ``run['visual_analysis']`` and ``run['explanation']`` are
+  internal/audit artifacts and may contain raw numerical model outputs.
+- ``run['handoff']`` is a score-free integration payload.
+- ``run['user_facing']`` is the final Vietnamese UI payload and is safe to render
+  directly to an end user.
 """
 
 from __future__ import annotations
@@ -278,13 +284,7 @@ def _recommendation_visual_signature(row: Mapping[str, object]) -> tuple:
 def _validate_recommendation_independence(
     recommendations: Sequence[Mapping[str, object]],
 ) -> None:
-    """Reject the exact overconfident clone pattern seen in real-Qwen testing.
-
-    Identical low-confidence/ambiguous results remain valid because genuinely
-    similar candidates can be hard to distinguish. The guard only rejects the
-    narrow pattern where all Top-3 rows make the exact same non-ambiguous,
-    high-confidence visual claims, which is a strong signal of mechanical reuse.
-    """
+    """Reject the exact overconfident clone pattern seen in real-Qwen testing."""
 
     if len(recommendations) != 3:
         return
@@ -455,7 +455,7 @@ def render_explanation_vi_v2(
     analysis: Mapping[str, object],
     evidence: Mapping[str, object],
 ) -> dict:
-    """Render all human-facing V2 prose from deterministic Vietnamese templates."""
+    """Render an internal/audit explanation; raw scores are allowed here."""
 
     normalized_evidence = validate_vlm_evidence_v2(evidence)
     normalized_analysis = validate_visual_analysis_v2(analysis, normalized_evidence)
@@ -539,9 +539,7 @@ def render_explanation_vi_v2(
                 "coarse_category": str(candidate["coarse_category"]),
                 "compatibility_logit": float(candidate["compatibility_logit"]),
                 "improvement_logit": float(candidate["improvement_logit"]),
-                "headline": (
-                    f"Recommendation #{int(candidate['rank'])}: item {item_id}."
-                ),
+                "headline": f"Recommendation #{int(candidate['rank'])}: item {item_id}.",
                 "score_summary": (
                     f"Frozen scorer cho compatibility logit "
                     f"{float(candidate['compatibility_logit']):.4f}, cải thiện "
@@ -587,7 +585,13 @@ def build_handoff_result_v2(
     model_id: str,
     generation_attempts: int,
 ) -> dict:
-    """Build a compact deploy-facing result without raw Qwen text or private evidence."""
+    """Build a score-free integration handoff from an internal explanation.
+
+    Raw compatibility/improvement logits, LOO deltas, score summaries, model
+    names, and raw model text intentionally remain outside this payload. The
+    frontend may use IDs/ranks for image binding and use ``run['user_facing']``
+    for end-user prose.
+    """
 
     if not isinstance(explanation, Mapping):
         raise TypeError("explanation must be a mapping")
@@ -602,29 +606,52 @@ def build_handoff_result_v2(
         "uncertainty_note",
         "limitations",
     }
-    if set(explanation) != required or explanation.get("schema_version") != EXPLANATION_SCHEMA_VERSION_V2:
+    if (
+        set(explanation) != required
+        or explanation.get("schema_version") != EXPLANATION_SCHEMA_VERSION_V2
+    ):
         raise ValueError("explanation is not a canonical VLM explanation V2 payload")
-    if isinstance(generation_attempts, bool) or not isinstance(generation_attempts, int) or generation_attempts < 1:
+    if (
+        isinstance(generation_attempts, bool)
+        or not isinstance(generation_attempts, int)
+        or generation_attempts < 1
+    ):
         raise ValueError("generation_attempts must be an integer >= 1")
     if not isinstance(model_id, str) or not model_id.strip():
         raise ValueError("model_id must be a non-empty string")
 
+    diagnosis = explanation["diagnosis"]
     recommendations = explanation["recommendations"]
+    if not isinstance(diagnosis, Mapping):
+        raise ValueError("handoff diagnosis must be an object")
     if not isinstance(recommendations, list) or len(recommendations) != 3:
         raise ValueError("handoff requires exactly three recommendation rows")
+
+    safe_recommendations: list[dict[str, object]] = []
+    for row in recommendations:
+        if not isinstance(row, Mapping):
+            raise ValueError("handoff recommendation row must be an object")
+        safe_recommendations.append(
+            {
+                "rank": int(row["rank"]),
+                "item_id": str(row["item_id"]),
+                "master_category": str(row["master_category"]),
+                "coarse_category": str(row["coarse_category"]),
+                "visual_summary": str(row["visual_summary"]),
+                "visual_observations": list(row["visual_observations"]),
+            }
+        )
 
     return {
         "schema_version": HANDOFF_SCHEMA_VERSION_V2,
         "protocol_version": VLM_PROTOCOL_VERSION_V2,
-        "model_id": model_id,
-        "generation_attempts": generation_attempts,
         "problematic_item_index": int(explanation["problematic_item_index"]),
         "problematic_item_id": str(explanation["problematic_item_id"]),
-        "headline": str(explanation["headline"]),
-        "diagnosis": explanation["diagnosis"],
-        "recommendations": recommendations,
-        "explanation": str(explanation["explanation"]),
-        "uncertainty_note": str(explanation["uncertainty_note"]),
+        "diagnosis": {
+            "visual_summary": str(diagnosis["visual_summary"]),
+            "visual_observations": list(diagnosis["visual_observations"]),
+        },
+        "recommendations": safe_recommendations,
         "limitations": list(explanation["limitations"]),
     }
 
@@ -646,7 +673,7 @@ class VLMExplanationPipelineV2:
         *,
         must_exist: bool = True,
     ) -> dict:
-        """Run Qwen -> validator -> renderer and return internal + handoff results."""
+        """Run Qwen -> validator -> internal + score-free public renderers."""
 
         normalized_evidence = validate_vlm_evidence_v2(evidence)
         vision = self.config["vision"]
@@ -694,6 +721,16 @@ class VLMExplanationPipelineV2:
             model_id=self.backend.model_id,
             generation_attempts=generation_attempts,
         )
+
+        # Local import avoids a module-level cycle because the user renderer
+        # itself imports this module's validator.
+        from .user_renderer_v2 import render_user_facing_vi_v2
+
+        user_facing = render_user_facing_vi_v2(
+            visual_analysis,
+            normalized_evidence,
+        )
+
         run = {
             "schema_version": RUN_SCHEMA_VERSION_V2,
             "protocol_version": VLM_PROTOCOL_VERSION_V2,
@@ -704,6 +741,7 @@ class VLMExplanationPipelineV2:
             "visual_analysis": visual_analysis,
             "explanation": rendered_explanation,
             "handoff": handoff,
+            "user_facing": user_facing,
         }
         if self.config["output"]["include_raw_response"]:
             run["raw_response"] = raw_response
