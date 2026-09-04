@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """Structured evidence V2 joining frozen LOO with frozen Recommendation V2.
 
-V1 remains unchanged and explicitly forbids recommendation payloads.  This
-module adds a new evidence schema whose recommendation section is copied from
-an authoritative ``RecommendationResult`` and cross-checked against the same
-frozen scorer/LOO evidence before it can reach a VLM.
+V1 remains unchanged and explicitly forbids recommendation payloads. This module
+adds a new evidence schema whose recommendation section is copied from an
+authoritative ``RecommendationResult`` and cross-checked against the same frozen
+scorer/LOO evidence before it can reach a VLM.
 """
 
 from __future__ import annotations
@@ -96,19 +96,35 @@ def _find_forbidden_keys(value: object, *, path: str = "root") -> list[str]:
     return found
 
 
+def _raise_on_forbidden_recommendation_input(value: object) -> None:
+    """Fail fast before any adapter projection can silently drop benchmark fields."""
+
+    leaked = _find_forbidden_keys(value, path="recommendation_result")
+    if leaked:
+        raise ValueError(
+            f"Recommendation result contains forbidden evaluation leakage: {leaked}"
+        )
+
+
 def _recommendation_result_parts(
     recommendation_result: object,
 ) -> tuple[dict[str, object], dict[str, object]]:
     """Return public recommendation output plus private runtime metadata.
 
-    Canonical runtime passes ``RecommendationResult``.  A plain mapping is also
+    Canonical runtime passes ``RecommendationResult``. A plain mapping is also
     accepted for adapters/tests when it contains the public keys plus
-    ``internal_metadata``.  Evaluation-only/public-only records are rejected
-    because they cannot prove that item ranks and scorer logits refer to the
-    same reranking call.
+    ``internal_metadata``. Evaluation-only/public-only records are rejected
+    because they cannot prove that item ranks and scorer logits refer to the same
+    reranking call.
+
+    For mapping inputs the entire raw nested object is scanned for forbidden
+    evaluation fields *before* extracting allowed public/internal fields. This
+    makes accidental benchmark leakage fail-fast instead of being silently
+    discarded by the adapter projection.
     """
 
     if isinstance(recommendation_result, Mapping):
+        _raise_on_forbidden_recommendation_input(recommendation_result)
         if "internal_metadata" not in recommendation_result:
             raise ValueError(
                 "recommendation_result mapping must include internal_metadata"
@@ -135,12 +151,11 @@ def _recommendation_result_parts(
     if not isinstance(internal, Mapping):
         raise ValueError("recommendation_result internal_metadata must be an object")
 
+    # Object-style RecommendationResult inputs cannot be recursively scanned
+    # before calling ``to_public_dict``. Scan the complete exposed public/private
+    # views immediately after extraction.
     combined = {"public": dict(public), "internal_metadata": dict(internal)}
-    leaked = _find_forbidden_keys(combined, path="recommendation_result")
-    if leaked:
-        raise ValueError(
-            f"Recommendation result contains forbidden evaluation leakage: {leaked}"
-        )
+    _raise_on_forbidden_recommendation_input(combined)
     return dict(public), dict(internal)
 
 
@@ -151,7 +166,7 @@ def build_recommendation_evidence(
 ) -> dict:
     """Build the authoritative recommendation section for ``vlm-evidence-v2``.
 
-    Candidate identity/rank/category comes from the public Top-3 result.  Scores
+    Candidate identity/rank/category comes from the public Top-3 result. Scores
     come from the corresponding first three rows of ``reranked_candidates``.
     The builder verifies both views agree and that every improvement logit is
     consistent with the same baseline compatibility logit used by LOO.
@@ -186,7 +201,10 @@ def build_recommendation_evidence(
         raise ValueError("Recommendation metadata targets a different LOO protocol")
 
     public_items = public.get("items")
-    if not isinstance(public_items, (list, tuple)) or len(public_items) != RECOMMENDATION_COUNT:
+    if (
+        not isinstance(public_items, (list, tuple))
+        or len(public_items) != RECOMMENDATION_COUNT
+    ):
         raise ValueError(
             f"Recommendation V2 evidence requires exactly Top-{RECOMMENDATION_COUNT} items"
         )
@@ -208,9 +226,7 @@ def build_recommendation_evidence(
         if not isinstance(public_row, Mapping):
             raise ValueError(f"recommendation items[{position}] must be an object")
         if not isinstance(score_row, Mapping):
-            raise ValueError(
-                f"reranked_candidates[{position}] must be an object"
-            )
+            raise ValueError(f"reranked_candidates[{position}] must be an object")
 
         expected_rank = position + 1
         rank = public_row.get("rank")
@@ -244,9 +260,7 @@ def build_recommendation_evidence(
             f"recommendation.items[{position}].coarse_category",
         ).upper()
         if coarse_category not in ALLOWED_CATEGORIES:
-            raise ValueError(
-                f"Unknown recommendation coarse category: {coarse_category}"
-            )
+            raise ValueError(f"Unknown recommendation coarse category: {coarse_category}")
         if coarse_category != problem_category:
             raise ValueError(
                 "Recommendation candidate coarse category must match the LOO problematic category"
@@ -489,9 +503,7 @@ def validate_vlm_evidence_v2(evidence: Mapping[str, object]) -> dict:
     if set(evidence) != required_top:
         raise ValueError("V2 evidence top-level schema is invalid")
     if evidence.get("schema_version") != EVIDENCE_SCHEMA_VERSION_V2:
-        raise ValueError(
-            f"schema_version must be {EVIDENCE_SCHEMA_VERSION_V2!r}"
-        )
+        raise ValueError(f"schema_version must be {EVIDENCE_SCHEMA_VERSION_V2!r}")
     if evidence.get("grounding_rules") != list(GROUNDING_RULES_V2):
         raise ValueError("grounding_rules must match the frozen V2 evidence contract")
 
