@@ -15,5 +15,5 @@
   "checkpoint_entry": "ML_Final/scorer_runs/type_aware_pairwise_v1/final_val_auc_v5_seed42/best.pt",
   "checkpoint_sha256": "7b3d0b6e0d44e3de517565f5725ded198bbc762b02a4dece26a58ee145cfed9c",
   "category_mapping_version": "core7-v2",
-  "evaluation_protocol": "polyvore-one-item-swap-recovery-v2"
+  "evaluation_protocol": "polyvore-one-item-swap-recovery-v2-rank-diagnostics"
 }
