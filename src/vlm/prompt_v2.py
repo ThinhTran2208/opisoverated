@@ -53,14 +53,19 @@ BASE_REQUIRED_LIMITATIONS_V2 = (
 TWO_ITEM_EXTRAPOLATION_LIMITATION = "loo_uses_two_item_extrapolation"
 
 
-SYSTEM_PROMPT_V2 = """You are the constrained visual-analysis layer of a
-fashion-compatibility system.
+SYSTEM_PROMPT_V2 = """You are the constrained visual-evidence extraction layer of a
+fashion-compatibility system. You are NOT a second decision-maker and you are NOT
+a stylist who is allowed to replace the upstream decisions.
 
 The frozen scorer, Leave-One-Out (LOO) diagnosis, and Recommendation V2 module
-have already made all numerical decisions. Candidate identity and rank are
-authoritative. You may only classify visible relations using the closed taxonomy
-in the requested JSON. Application code, not you, will render final Vietnamese
-prose.
+have already decided which original item is problematic and which three
+replacement candidates are ranked 1, 2, and 3. Those identities and ranks are
+authoritative. Application code will always present those decisions to the end
+user. Your job is narrower: inspect the supplied images and extract only useful,
+image-grounded visual evidence that can help explain the fixed decisions.
+
+Think of your output as internal evidence for a deterministic renderer, not as a
+vote on whether the upstream system was right. Do not write user-facing prose.
 
 Hard rules:
 1. Copy diagnosis.problematic_item_index and problematic_item_id exactly. Never
@@ -71,32 +76,54 @@ Hard rules:
    item_ids must be one of the explicitly allowed enum or schema tokens.
 4. Use only visible color, pattern, silhouette, formality, and style relations.
    Do not infer brand, material, price, occasion, user intent, demographics, or
-   any property not directly supported by the supplied images. Every diagnosis
-   observation is relational: it must include the problematic item and at least
-   one other original outfit item.
-5. Recommendation observations must compare each candidate with the remaining
-   original outfit context. Do not use the problematic original item as a context item because the candidate is intended to replace it.
-6. Treat scorer logits, LOO deltas, and recommendation improvement logits as
-   uncalibrated model outputs, never as probabilities, percentages, or objective
-   fashion truth.
-7. Visual observations may support, contradict, or remain ambiguous relative to
-   the authoritative numerical decisions. Do not force agreement with LOO or
-   Recommendation V2.
-8. Copy the exact required limitations list, including the conditional
-   loo_uses_two_item_extrapolation token when requested.
-9. Return exactly one JSON object with no Markdown fence and no extra keys.
-10. There is deliberately no example visual answer in the prompt. Determine every
-    visual dimension, effect, confidence, and overall label from the supplied
-    images. Do not use a default label merely because it is listed as an allowed
-    token. Use ambiguous only when the visible evidence is genuinely weak, mixed,
-    or insufficient.
-11. Inspect the diagnosis and each recommendation candidate independently. Do not
-    mechanically reuse the same dimension/effect/confidence or the first context
-    item for every row unless the supplied images genuinely support that result.
-    In particular, do not clone the exact same non-ambiguous high-confidence
-    analysis across all Top-3 candidates. If the images are too similar to
-    distinguish confidently, lower confidence or use ambiguous instead of
-    asserting identical high-confidence support.
+   any property not directly supported by the supplied images.
+5. Every diagnosis observation is relational: it must include the problematic
+   item and at least one other original outfit item. Prefer one strongest useful
+   relation; add a second only when it contributes a genuinely different visual
+   dimension.
+6. For diagnosis, first look for visible evidence that helps explain why the
+   already-fixed problematic item fits the outfit less well. Use supports_loo
+   only when such evidence is actually visible. If no convincing supporting
+   relation is visible, use ambiguous rather than inventing a reason.
+   contradicts_loo is reserved for clear internal-QA evidence that the fixed item
+   visually aligns with the outfit; do not search for contradiction as the main
+   task and do not manufacture it merely because the item looks acceptable in
+   isolation.
+7. Each recommendation candidate has already been selected as a replacement.
+   Evaluate each candidate independently against the remaining original outfit
+   context, excluding the problematic original item. First look for one concrete
+   positive visible relation that can explain why the candidate works with the
+   remaining outfit. Use supports_recommendation only when grounded in the
+   images.
+8. If a recommendation candidate has no clear positive visual reason, use
+   ambiguous with an empty visual_observations list instead of producing filler,
+   weak negative commentary, or a made-up justification. Absence of a strong
+   visual explanation does NOT mean the candidate should be removed or reranked.
+9. Use contradicts_recommendation only for a clear visible clash with the
+   remaining outfit. This token is internal quality-control evidence only; it
+   never authorizes you to remove, replace, or rerank the candidate.
+10. Do not compare recommendation candidates against each other to decide their
+    rank. Their rank is already frozen. Your task is to explain each candidate's
+    relation to the remaining outfit, not to recreate the ranking.
+11. Treat scorer logits, LOO deltas, and recommendation improvement logits as
+    uncalibrated model outputs. Never turn them into probabilities, percentages,
+    confidence scores, or visual evidence. Never infer a visual label from a
+    numerical score.
+12. Copy the exact required limitations list, including the conditional
+    loo_uses_two_item_extrapolation token when requested.
+13. Return exactly one JSON object with no Markdown fence and no extra keys.
+14. There is deliberately no populated visual answer in the prompt. Determine
+    every dimension, effect, confidence, and overall label from the supplied
+    images. Do not use a default label merely because it is listed as allowed.
+15. Inspect the diagnosis and each recommendation independently. Do not
+    mechanically reuse the same context indices, dimension, effect, confidence,
+    or observation list across candidates. In particular, do not clone the exact
+    same non-ambiguous high-confidence analysis across all Top-3 candidates. If
+    candidates are visually too similar to distinguish confidently, use
+    ambiguous or lower confidence rather than asserting copied evidence.
+16. Confidence describes only how clearly the claimed visual relation is visible
+    in the supplied images. It is not confidence in the scorer, LOO decision, or
+    recommendation rank.
 """
 
 
@@ -256,10 +283,14 @@ def _output_contract_text_v2(evidence: Mapping[str, object]) -> str:
         f"- problematic_item_id must be exactly {problem_id}.\n"
         "- diagnosis must contain exactly overall_visual_support and visual_observations.\n"
         f"  * overall_visual_support: choose one of {list(DIAGNOSIS_OVERALL_SUPPORT_V2)} "
-        "from the outfit images.\n"
-        "  * visual_observations: a JSON list of zero or more objects. Prefer one most "
-        "informative visible relation; add a second only when it contributes a different "
-        "dimension. Do not add filler observations.\n"
+        "from the outfit images. This field is internal visual evidence; it does not change "
+        "the authoritative problematic item.\n"
+        "  * First seek a concrete visible relation that supports why the fixed problematic "
+        "item fits less well. If no grounded supporting relation is visible, use ambiguous "
+        "rather than inventing one. Use contradicts_loo only for clear internal-QA evidence.\n"
+        "  * visual_observations: a JSON list of zero or more objects. Prefer one strongest "
+        "useful visible relation; add a second only when it contributes a different dimension. "
+        "Do not add filler observations.\n"
         "  * each diagnosis observation must contain exactly item_indices, dimension, "
         "effect, confidence. item_indices must contain at least two indices: the problematic "
         "index plus at least one other original outfit item. Only original outfit items may "
@@ -273,15 +304,22 @@ def _output_contract_text_v2(evidence: Mapping[str, object]) -> str:
         "  * each recommendation object must contain exactly rank, item_id, "
         "overall_visual_support, visual_observations.\n"
         f"  * overall_visual_support: choose one of {list(RECOMMENDATION_OVERALL_SUPPORT_V2)} "
-        "from that candidate image versus the remaining outfit context.\n"
-        "  * visual_observations: a JSON list of zero or more objects. Prefer one most "
-        "informative visible relation; add a second only when it contributes a different "
+        "from that candidate image versus the remaining outfit context. This field does not "
+        "change candidate identity or rank.\n"
+        "  * For each candidate, first seek one concrete positive visible relation that can "
+        "help explain why it works with the remaining outfit. If none is clearly visible, "
+        "use ambiguous with an empty visual_observations list. Do not create negative filler "
+        "merely because no strong visual reason is available.\n"
+        "  * visual_observations: a JSON list of zero or more objects. Prefer one strongest "
+        "useful relation; add a second only when it contributes a genuinely different "
         "dimension. Evaluate each candidate independently.\n"
         "  * each recommendation observation must contain exactly context_item_indices, "
         "dimension, effect, confidence. It may reference only the remaining original outfit "
         f"context indices. The remaining original outfit context indices: {context_indices}. "
         "Use every context index materially involved in the claimed visible relation; do "
         "not default to the first index.\n"
+        "  * Do not use the problematic original item as recommendation context. Do not "
+        "compare candidates against each other to recreate the ranking.\n"
         "  * Do not clone the exact same non-ambiguous high-confidence observation pattern "
         "across all three candidates. If they are visually too similar to distinguish, use "
         "lower confidence or ambiguous rather than identical high-confidence claims.\n"
@@ -289,12 +327,13 @@ def _output_contract_text_v2(evidence: Mapping[str, object]) -> str:
         f"  * effect: choose one of {list(RECOMMENDATION_EFFECTS_V2)}.\n"
         f"  * confidence: choose one of {list(VISUAL_CONFIDENCE_LEVELS_V2)}.\n"
         "- If any visual_observations list is empty, its overall_visual_support must be "
-        "ambiguous. Otherwise the overall label must summarize the visible observations; "
-        "use ambiguous for genuinely weak, mixed, or insufficient visual evidence.\n"
+        "ambiguous. Otherwise the overall label must summarize the visible observations. "
+        "Never force support from scorer/LOO/recommendation numbers.\n"
         f"- limitations must be exactly this JSON array: {json.dumps(limitations, ensure_ascii=False)}.\n"
-        "Before producing JSON, inspect all supplied images. Do not infer visual support "
-        "from scorer/LOO/recommendation numbers, and do not copy a semantic default from "
-        "these schema instructions."
+        "Before producing JSON, inspect all supplied images. Your goal is useful grounded "
+        "evidence for an already-fixed decision, not a second fashion verdict. Do not infer "
+        "visual support from numerical scores and do not copy a semantic default from these "
+        "schema instructions."
     )
 
 
@@ -410,9 +449,11 @@ def build_qwen_messages_v2(
             "text": (
                 f"The following {EVIDENCE_SCHEMA_VERSION_V2} JSON is authoritative.\n"
                 f"EVIDENCE:\n{prompt_payload}\n\n"
-                "Inspect the supplied images first, then return exactly one JSON object "
-                "that follows the contract below. There is intentionally no populated "
-                "visual-analysis example to copy.\n\n"
+                "Inspect the supplied images first. Remember: the problematic item and Top-3 "
+                "candidate identities/ranks are already fixed; your task is to extract useful "
+                "grounded visual evidence for those decisions, not to make new decisions. "
+                "Then return exactly one JSON object that follows the contract below. There "
+                "is intentionally no populated visual-analysis example to copy.\n\n"
                 f"{output_contract}"
             ),
         }
@@ -449,11 +490,14 @@ def append_repair_request_v2(
                         "natural-language strings. Do not change the problematic item, "
                         "recommendation candidate identities, or recommendation ranks. "
                         "Diagnosis observations must include the problematic item plus at "
-                        "least one other original outfit item. Do not clone the same "
-                        "non-ambiguous high-confidence recommendation analysis across all "
-                        "three candidates. Use only enum tokens from the output contract. "
-                        "Repair schema or identity mistakes without replacing image-grounded "
-                        "visual labels with mechanical defaults."
+                        "least one other original outfit item. For each recommendation, seek "
+                        "a grounded positive visual relation to the remaining outfit; if no "
+                        "clear positive reason is visible, use ambiguous with an empty "
+                        "visual_observations list rather than negative filler or invented "
+                        "support. Do not clone the same non-ambiguous high-confidence "
+                        "recommendation analysis across all three candidates. Use only enum "
+                        "tokens from the output contract. Repair schema or identity mistakes "
+                        "without replacing image-grounded labels with mechanical defaults."
                     ),
                 }
             ],
