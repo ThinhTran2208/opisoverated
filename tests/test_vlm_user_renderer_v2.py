@@ -156,17 +156,20 @@ class VlmUserRendererV2Tests(unittest.TestCase):
     def test_renders_decisive_plain_vietnamese_for_end_users(self):
         rendered = render_user_facing_vi_v2(analysis_fixture(), evidence_fixture())
         self.assertEqual(rendered["schema_version"], USER_FACING_SCHEMA_VERSION_V2)
-        self.assertIn("Chiếc túi hiện tại", rendered["problematic_item"]["headline"])
-        self.assertIn("kém phù hợp nhất", rendered["problematic_item"]["headline"])
-        self.assertIn("Cả ba mẫu túi", rendered["summary"])
+        self.assertIn("chiếc túi hiện tại là món được ưu tiên thay", rendered["problematic_item"]["headline"])
+        self.assertTrue(rendered["problematic_item"]["reason"])
+        self.assertIn("ảnh hưởng lớn nhất", rendered["problematic_item"]["reason"])
+        self.assertIn("Ba mẫu túi", rendered["summary"])
         self.assertIn("phù hợp hơn", rendered["summary"])
         self.assertEqual(len(rendered["recommendations"]), 3)
         self.assertEqual(
             [row["display_name"] for row in rendered["recommendations"]],
             ["Mẫu túi 1", "Mẫu túi 2", "Mẫu túi 3"],
         )
+        self.assertIn("lựa chọn ưu tiên nhất", rendered["recommendations"][0]["reason"])
         self.assertIn("màu sắc phối hợp tốt", rendered["recommendations"][0]["reason"])
-        self.assertIn("phù hợp hơn chiếc túi hiện tại", rendered["recommendations"][1]["reason"])
+        self.assertIn("lựa chọn thứ hai", rendered["recommendations"][1]["reason"])
+        self.assertIn("phù hợp hơn với outfit", rendered["recommendations"][1]["reason"])
         self.assertIn(
             "phom dáng giúp tổng thể outfit cân đối hơn",
             rendered["recommendations"][2]["reason"],
@@ -184,7 +187,7 @@ class VlmUserRendererV2Tests(unittest.TestCase):
         ):
             self.assertNotIn(awkward_internal_phrase, prose)
         self.assertIn("mẫu túi 2", prose)
-        self.assertIn("phù hợp hơn chiếc túi hiện tại", prose)
+        self.assertIn("phù hợp hơn với outfit", prose)
 
     def test_user_prose_hides_internal_implementation_terms(self):
         rendered = render_user_facing_vi_v2(analysis_fixture(), evidence_fixture())
