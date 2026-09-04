@@ -6,12 +6,13 @@ import argparse
 import json
 from collections import Counter
 from pathlib import Path
+from statistics import median
 from typing import Mapping, Sequence
 
 from .pipeline import RecommendationPipeline
 from .trace import CandidateTraceWriter, candidate_trace_record
 
-EVALUATION_PROTOCOL = "polyvore-one-item-swap-recovery-v2-conditional-hit"
+EVALUATION_PROTOCOL = "polyvore-one-item-swap-recovery-v2-rank-diagnostics"
 DEFAULT_EPSILON = 0.0
 
 
@@ -42,15 +43,27 @@ class Evaluation3Evaluator:
             excluded[key] = 0
         for key in ("ground_truth_not_in_hybrid_top200",
                     "ground_truth_not_in_full_union",
-                    "ground_truth_in_full_union_not_final_top3",
+                    "ground_truth_missing_after_rerank",
                     "fewer_than_three_final_candidates",
                     "image_read_error", "scorer_error"):
             failures[key] = 0
 
         hits = {stage: {50: 0, 100: 0, 200: 0}
                 for stage in ("item_only", "context_only", "hybrid")}
+
+        # Reranking diagnostics are conditioned on GT being present in the exact
+        # full union that is passed to the frozen scorer. The before-rerank rank
+        # is the deterministic hybrid union order produced by retrieval.py:
+        # best channel rank first, then item_id as a deterministic tie-break.
         full_union_gt_count = 0
-        conditional_hit3_count = 0
+        rank_evaluable_count = 0
+        rank_improved_count = 0
+        rank_unchanged_count = 0
+        rank_worsened_count = 0
+        pre_rr_sum = 0.0
+        post_rr_sum = 0.0
+        rank_changes: list[int] = []
+
         successful = evaluated_recommendations = 0
         records: list[dict[str, object]] = []
 
@@ -158,16 +171,30 @@ class Evaluation3Evaluator:
             if ground_truth not in hybrid_order:
                 failures["ground_truth_not_in_hybrid_top200"] += 1
 
-            union_has_gt = ground_truth in full_union_order
-            if union_has_gt:
-                full_union_gt_count += 1
-                rerank_rank = _rank(all_reranked, ground_truth)
-                is_conditional_hit3 = rerank_rank is not None and rerank_rank <= 3
-                conditional_hit3_count += int(is_conditional_hit3)
-                if not is_conditional_hit3:
-                    failures["ground_truth_in_full_union_not_final_top3"] += 1
-            else:
+            pre_rank = _rank(full_union_order, ground_truth)
+            post_rank = None
+            rank_change = None
+            if pre_rank is None:
                 failures["ground_truth_not_in_full_union"] += 1
+            else:
+                full_union_gt_count += 1
+                post_rank = _rank(all_reranked, ground_truth)
+                if post_rank is None:
+                    # This should never happen because reranking must preserve the
+                    # candidate set. Keep it explicit as an implementation failure.
+                    failures["ground_truth_missing_after_rerank"] += 1
+                else:
+                    rank_evaluable_count += 1
+                    rank_change = int(pre_rank - post_rank)
+                    rank_changes.append(rank_change)
+                    pre_rr_sum += 1.0 / pre_rank
+                    post_rr_sum += 1.0 / post_rank
+                    if rank_change > 0:
+                        rank_improved_count += 1
+                    elif rank_change == 0:
+                        rank_unchanged_count += 1
+                    else:
+                        rank_worsened_count += 1
 
             for candidate in reranked[:3]:
                 evaluated_recommendations += 1
@@ -195,6 +222,9 @@ class Evaluation3Evaluator:
                     "missing_embedding": retrieval.missing_embedding_count,
                 },
             )
+            trace["gt_rank_pre_rerank"] = pre_rank
+            trace["gt_rank_post_rerank"] = post_rank
+            trace["gt_rank_change_pre_minus_post"] = rank_change
             records.append(trace)
             if trace_writer:
                 trace_writer.append(trace)
@@ -206,10 +236,25 @@ class Evaluation3Evaluator:
 
         ratio = lambda n: n / evaluated
         checks = coverage["required_item_checks"]
-        conditional_hit3 = (
-            conditional_hit3_count / full_union_gt_count
-            if full_union_gt_count else None
-        )
+
+        if rank_evaluable_count:
+            conditional_mrr_pre = pre_rr_sum / rank_evaluable_count
+            conditional_mrr_post = post_rr_sum / rank_evaluable_count
+            conditional_mrr_gain = conditional_mrr_post - conditional_mrr_pre
+            rank_improved_rate = rank_improved_count / rank_evaluable_count
+            rank_unchanged_rate = rank_unchanged_count / rank_evaluable_count
+            rank_worsened_rate = rank_worsened_count / rank_evaluable_count
+            mean_rank_change = sum(rank_changes) / rank_evaluable_count
+            median_rank_change = float(median(rank_changes))
+        else:
+            conditional_mrr_pre = None
+            conditional_mrr_post = None
+            conditional_mrr_gain = None
+            rank_improved_rate = None
+            rank_unchanged_rate = None
+            rank_worsened_rate = None
+            mean_rank_change = None
+            median_rank_change = None
 
         return {
             "protocol_version": EVALUATION_PROTOCOL,
@@ -234,11 +279,21 @@ class Evaluation3Evaluator:
                 for stage, values in hits.items()
             },
             "reranking": {
-                "metric": "conditional_exact_reference_hit_at_3",
-                "conditional_hit_at_3": conditional_hit3,
+                "metric": "conditional_exact_reference_rank_diagnostics",
                 "eligible_queries_gt_in_full_union": full_union_gt_count,
-                "conditional_hits_at_3": conditional_hit3_count,
+                "rank_evaluable_queries": rank_evaluable_count,
                 "full_union_gt_coverage": ratio(full_union_gt_count),
+                "gt_rank_improved_count": rank_improved_count,
+                "gt_rank_unchanged_count": rank_unchanged_count,
+                "gt_rank_worsened_count": rank_worsened_count,
+                "gt_rank_improved_rate": rank_improved_rate,
+                "gt_rank_unchanged_rate": rank_unchanged_rate,
+                "gt_rank_worsened_rate": rank_worsened_rate,
+                "mean_rank_change_pre_minus_post": mean_rank_change,
+                "median_rank_change_pre_minus_post": median_rank_change,
+                "conditional_mrr_before_scorer": conditional_mrr_pre,
+                "conditional_mrr_after_scorer": conditional_mrr_post,
+                "conditional_mrr_gain": conditional_mrr_gain,
             },
             "replacement_quality": {
                 "success_rate": successful / evaluated_recommendations if evaluated_recommendations else None,
@@ -258,31 +313,42 @@ def report_markdown(result: Mapping[str, object]) -> str:
                        ("Hybrid Top-200", "hybrid")):
         m = retrieval[key]
         rows.append(
-            f"| {label} | {f(m['recall_at_50'])} | {f(m['recall_at_100'])} | {f(m['recall_at_200'])} | N/A |"
+            f"| {label} | {f(m['recall_at_50'])} | {f(m['recall_at_100'])} | {f(m['recall_at_200'])} |"
         )
-    rows.append(
-        f"| Frozen scorer rerank | N/A | N/A | N/A | {f(reranking['conditional_hit_at_3'])} |"
-    )
 
     return "\n".join([
-        "# Recommendation V2 — Conditional Reranking Evaluation",
+        "# Recommendation V2 — Retrieval + Reranking Rank Diagnostics",
         "",
         f"Split: `{result['split']}`. Epsilon cố định: `{result['epsilon']}` trên `compatibility_logit`.",
         "",
-        "| Stage | Recall@50 | Recall@100 | Recall@200 | Conditional Hit@3 |",
-        "| --- | ---: | ---: | ---: | ---: |",
+        "## Retrieval",
+        "",
+        "| Stage | Recall@50 | Recall@100 | Recall@200 |",
+        "| --- | ---: | ---: | ---: |",
         *rows,
         "",
-        "Conditional Hit@3 chỉ xét các query mà exact ground-truth item có mặt trong FULL retrieval union mà scorer thực sự được rerank.",
-        "Nó đo exact-reference recovery có điều kiện, không phải recommendation accuracy hay human preference.",
+        f"- Full-union GT coverage: {f(reranking['full_union_gt_coverage'])}",
+        f"- GT có mặt trong full union: {reranking['eligible_queries_gt_in_full_union']}",
+        "",
+        "## Frozen scorer reranking — conditional exact-reference diagnostics",
+        "",
+        f"- Query đủ điều kiện rank comparison: {reranking['rank_evaluable_queries']}",
+        f"- GT rank improved: {reranking['gt_rank_improved_count']} ({f(reranking['gt_rank_improved_rate'])})",
+        f"- GT rank unchanged: {reranking['gt_rank_unchanged_count']} ({f(reranking['gt_rank_unchanged_rate'])})",
+        f"- GT rank worsened: {reranking['gt_rank_worsened_count']} ({f(reranking['gt_rank_worsened_rate'])})",
+        f"- Mean rank change (pre - post): {f(reranking['mean_rank_change_pre_minus_post'])}",
+        f"- Median rank change (pre - post): {f(reranking['median_rank_change_pre_minus_post'])}",
+        f"- Conditional MRR before scorer: {f(reranking['conditional_mrr_before_scorer'])}",
+        f"- Conditional MRR after scorer: {f(reranking['conditional_mrr_after_scorer'])}",
+        f"- Conditional MRR gain: {f(reranking['conditional_mrr_gain'])}",
+        "",
+        "Rank change dương nghĩa là frozen scorer đã đẩy exact GT lên vị trí cao hơn so với deterministic full-union order trước rerank.",
+        "Conditional MRR before/after chỉ tính trên cùng các query mà GT có trong full union, nên tách ảnh hưởng của retrieval khỏi reranking.",
+        "Các metric này vẫn chỉ theo dõi original swapped-out reference; chúng không phải recommendation accuracy hay human preference.",
         "",
         f"- Tổng query: {result['total_queries']}",
         f"- Query hợp lệ: {result['valid_queries']}",
         f"- Query bị loại: {result['excluded_queries']}",
-        f"- GT có mặt trong full union: {reranking['eligible_queries_gt_in_full_union']}",
-        f"- Full-union GT coverage: {f(reranking['full_union_gt_coverage'])}",
-        f"- Conditional Hit@3 numerator: {reranking['conditional_hits_at_3']}",
-        f"- Conditional Hit@3: {f(reranking['conditional_hit_at_3'])}",
         f"- Replacement Success Rate: {f(result['replacement_quality']['success_rate'])}",
         f"- Image catalog: `{json.dumps(result.get('image_catalog_validation'), ensure_ascii=False)}`",
         f"- Coverage: `{json.dumps(result['coverage'], ensure_ascii=False)}`",
@@ -295,7 +361,7 @@ def report_markdown(result: Mapping[str, object]) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run Recommendation V2 conditional reranking evaluation")
+    parser = argparse.ArgumentParser(description="Run Recommendation V2 reranking rank diagnostics")
     parser.add_argument("--artifact-root", help="Path to ML_Final directory")
     parser.add_argument("--image-root", help="Path to item-image directory")
     parser.add_argument("--ml-zip", help="Legacy ML_Final ZIP path")
