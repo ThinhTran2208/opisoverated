@@ -40,48 +40,30 @@ but Core-7 category is known
 → Core-7 category pool
 ```
 
-Examples:
-
-```text
-master_category = T-Shirts, coarse = TOP
-→ search only T-Shirts
-```
-
-```text
-master_category = missing, coarse = TOP
-→ fallback to all eligible TOP items
-```
-
 If neither exact master category nor a valid Core-7 category is available, recommendation cannot proceed.
 
-The offline Polyvore one-item-swap benchmark normally has exact master-category metadata, so its intended V2 evaluation path remains the exact-master-category path. Core-7 fallback is a runtime robustness mechanism, not a way to broaden the benchmark pool unnecessarily.
+The offline Polyvore one-item-swap benchmark normally has exact master-category metadata, so Core-7 fallback is a runtime robustness mechanism rather than the normal benchmark path.
 
 ## Two retrieval channels
 
-### Item channel
+Item channel:
 
 ```text
 query = FashionCLIP embedding(problematic item)
 ```
 
-Cosine similarity is computed only against the selected category-constrained candidate pool, then Top-200 are retained.
-
-### Context channel
+Context channel:
 
 ```text
 context = mean(FashionCLIP embeddings of all non-problematic outfit items)
 context = L2_normalize(context)
 ```
 
-Cosine similarity is computed between this context vector and the same selected candidate pool, then Top-200 are retained.
-
-The two Top-200 lists are unioned and de-duplicated. The union may contain fewer than 400 items because the channels can overlap or the selected pool can contain fewer than 200 eligible items.
+Both cosine searches are performed only inside the selected category-constrained pool. Each retains Top-200, then the two lists are unioned and de-duplicated. The full union may contain up to roughly 400 candidates.
 
 ## Reranking
 
-Every hybrid candidate replaces the problematic position in the complete outfit. The frozen scorer computes `compatibility_logit` for each candidate outfit. Final ranking is descending `compatibility_logit`; public output is Top-3.
-
-`improvement_logit = candidate_logit - baseline_logit` remains internal metadata. Since all candidates share the same baseline, sorting by candidate logit and sorting by improvement give the same order.
+Every full-union candidate replaces the problematic position in the complete outfit. The frozen scorer computes `compatibility_logit` and reranks the full union. Public output is Top-3.
 
 Frozen scorer checkpoint SHA-256:
 
@@ -89,23 +71,9 @@ Frozen scorer checkpoint SHA-256:
 7b3d0b6e0d44e3de517565f5725ded198bbc762b02a4dece26a58ee145cfed9c
 ```
 
-## Runtime versus evaluation
-
-Runtime can use the existing LOO diagnosis path:
-
-```text
-outfit -> LOO -> problematic index -> Recommendation V2 -> Top-3
-```
-
-At runtime, Recommendation V2 uses the category policy above: exact master category first, Core-7 fallback only if exact metadata is unavailable.
-
-The current offline component evaluation does not evaluate LOO. It uses the known synthetic `swapped_item_index` so recommendation retrieval/reranking can be measured independently.
-
 ## Offline benchmark terminology
 
-The evaluator is a Polyvore synthetic one-item-swap recovery benchmark, not the human-annotated EVALUATION3 A-Test2000 protocol.
-
-For each negative query:
+For each synthetic negative query:
 
 ```text
 problematic position = negative_metadata.swapped_item_index
@@ -113,28 +81,82 @@ ground truth item    = negative_metadata.original_item_id
 current swapped item = negative_metadata.replacement_item_id
 ```
 
-Ground truth therefore means the original item that was removed when the synthetic negative outfit was created. It is not assumed to be the only valid replacement.
+The ground-truth item is only the original item removed by the synthetic corruption process. It is not assumed to be the unique valid recommendation.
 
-## Metrics retained for time-constrained V2 comparison
+## Conditional Hit@3 experiment branch
 
-V2 keeps the existing metrics so V1 and V2 can be compared directly:
+This branch changes only the evaluation view. The recommendation algorithm, retrieval candidates, frozen scorer, and public Top-3 remain unchanged.
+
+Branch:
+
+```text
+feat/recommendation-conditional-hit-v2
+```
+
+The previous branch keeps the original unconditional Hit@1 / Hit@3 / MRR metrics unchanged:
+
+```text
+feat/recommendation-category-aware-v2
+```
+
+### Why conditional Hit@3
+
+Unconditional Hit@3 divides by every benchmark query, including queries where the exact ground-truth item was never present in the candidate set given to the scorer. That mixes candidate-generation failure with reranker behavior.
+
+Conditional Hit@3 instead asks:
+
+> When the exact reference item is present in the full retrieval union actually seen by the scorer, how often does the scorer rank it in the final Top-3?
+
+Formula:
+
+```text
+Conditional Hit@3
+=
+# queries where GT is in final Top-3
+----------------------------------
+# queries where GT is in FULL retrieval union
+```
+
+The denominator uses the full de-duplicated union, not `Hybrid Recall@200`. This matters because the scorer reranks the full union, while `Hybrid Recall@200` inspects only the first 200 candidates under the deterministic hybrid ordering.
+
+The evaluator also reports:
+
+```text
+full_union_gt_coverage
+= # queries where GT is in full union / # valid queries
+```
+
+This separates the two stages:
+
+```text
+retrieval: can the exact reference be generated?
+reranking: conditional on generation, can the scorer place it in Top-3?
+```
+
+### Interpretation limitation
+
+Conditional Hit@3 is still an exact-reference recovery diagnostic, not recommendation accuracy. A candidate different from the original item can still be a valid or better replacement, but it will not count as a hit under this synthetic single-reference benchmark.
+
+## Metrics on this branch
+
+Main retrieval diagnostics:
 
 - item-only Recall@50 / Recall@100 / Recall@200;
 - context-only Recall@50 / Recall@100 / Recall@200;
-- hybrid Recall@50 / Recall@100 / Recall@200;
-- final Hit@1 / Hit@3 / MRR;
-- Replacement Success Rate with fixed epsilon `0.0`.
+- hybrid Top-200 Recall@50 / Recall@100 / Recall@200.
 
-Interpretation limitation:
+Reranking diagnostic:
 
-- Recall@K measures whether the original swapped-out item is recovered by retrieval;
-- Hit@1 / Hit@3 / MRR measure exact original-item recovery after scorer reranking;
-- they do not directly measure human preference or prove that other higher-ranked replacements are bad;
-- Replacement Success Rate is scorer self-consistency, not an independent human-quality metric.
+- full-union GT coverage;
+- Conditional exact-reference Hit@3.
 
-For the project report, retrieval Recall@200 should be emphasized as the main diagnostic for whether V2 fixes the V1 candidate-generation bottleneck. Hit@1/Hit@3/MRR remain useful exact-recovery diagnostics but should not be called recommendation accuracy.
+Additional internal diagnostic:
 
-## Frozen V2 config
+- Replacement Success Rate at fixed epsilon `0.0`, interpreted only as frozen-scorer self-consistency.
+
+The old unconditional Hit@1 / Hit@3 / MRR remain available on the original category-aware V2 branch and are intentionally not the headline reranking metrics on this experimental branch.
+
+## Frozen V2 algorithm config
 
 ```text
 recommendation_version = category-aware-hybrid-v2
@@ -153,15 +175,4 @@ Config file:
 configs/recommendation_category_aware_v2.json
 ```
 
-## Evaluation order
-
-Because V1 test results have already been viewed, V2 should be treated as a new development iteration. Preferred process under the remaining time budget:
-
-```text
-1. run V2 on validation and verify retrieval behavior
-2. freeze V2 implementation/config
-3. run the existing one-item-swap test metrics once for the V2 comparison
-4. report V1 vs V2 transparently
-```
-
-Do not describe the V2 test run as an untouched first-look test selected independently of V1 results.
+This conditional-metric branch does not retrain or alter FashionCLIP, the scorer, LOO, retrieval logic, or recommendation output.
