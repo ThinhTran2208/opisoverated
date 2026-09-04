@@ -71,7 +71,9 @@ Hard rules:
    item_ids must be one of the explicitly allowed enum or schema tokens.
 4. Use only visible color, pattern, silhouette, formality, and style relations.
    Do not infer brand, material, price, occasion, user intent, demographics, or
-   any property not directly supported by the supplied images.
+   any property not directly supported by the supplied images. Every diagnosis
+   observation is relational: it must include the problematic item and at least
+   one other original outfit item.
 5. Recommendation observations must compare each candidate with the remaining
    original outfit context. Do not use the problematic original item as a context item because the candidate is intended to replace it.
 6. Treat scorer logits, LOO deltas, and recommendation improvement logits as
@@ -91,6 +93,10 @@ Hard rules:
 11. Inspect the diagnosis and each recommendation candidate independently. Do not
     mechanically reuse the same dimension/effect/confidence or the first context
     item for every row unless the supplied images genuinely support that result.
+    In particular, do not clone the exact same non-ambiguous high-confidence
+    analysis across all Top-3 candidates. If the images are too similar to
+    distinguish confidently, lower confidence or use ambiguous instead of
+    asserting identical high-confidence support.
 """
 
 
@@ -255,8 +261,9 @@ def _output_contract_text_v2(evidence: Mapping[str, object]) -> str:
         "informative visible relation; add a second only when it contributes a different "
         "dimension. Do not add filler observations.\n"
         "  * each diagnosis observation must contain exactly item_indices, dimension, "
-        "effect, confidence. item_indices must include the problematic index and only "
-        "reference original outfit items.\n"
+        "effect, confidence. item_indices must contain at least two indices: the problematic "
+        "index plus at least one other original outfit item. Only original outfit items may "
+        "be referenced.\n"
         f"  * dimension: choose one of {list(VISUAL_DIMENSIONS_V2)}.\n"
         f"  * effect: choose one of {list(DIAGNOSIS_EFFECTS_V2)}.\n"
         f"  * confidence: choose one of {list(VISUAL_CONFIDENCE_LEVELS_V2)}.\n"
@@ -275,6 +282,9 @@ def _output_contract_text_v2(evidence: Mapping[str, object]) -> str:
         f"context indices. The remaining original outfit context indices: {context_indices}. "
         "Use every context index materially involved in the claimed visible relation; do "
         "not default to the first index.\n"
+        "  * Do not clone the exact same non-ambiguous high-confidence observation pattern "
+        "across all three candidates. If they are visually too similar to distinguish, use "
+        "lower confidence or ambiguous rather than identical high-confidence claims.\n"
         f"  * dimension: choose one of {list(VISUAL_DIMENSIONS_V2)}.\n"
         f"  * effect: choose one of {list(RECOMMENDATION_EFFECTS_V2)}.\n"
         f"  * confidence: choose one of {list(VISUAL_CONFIDENCE_LEVELS_V2)}.\n"
@@ -438,9 +448,12 @@ def append_repair_request_v2(
                         f"{validation_error}. Return corrected JSON only. Do not emit "
                         "natural-language strings. Do not change the problematic item, "
                         "recommendation candidate identities, or recommendation ranks. "
-                        "Use only enum tokens from the output contract. Repair schema or "
-                        "identity mistakes without replacing image-grounded visual labels "
-                        "with mechanical defaults."
+                        "Diagnosis observations must include the problematic item plus at "
+                        "least one other original outfit item. Do not clone the same "
+                        "non-ambiguous high-confidence recommendation analysis across all "
+                        "three candidates. Use only enum tokens from the output contract. "
+                        "Repair schema or identity mistakes without replacing image-grounded "
+                        "visual labels with mechanical defaults."
                     ),
                 }
             ],
