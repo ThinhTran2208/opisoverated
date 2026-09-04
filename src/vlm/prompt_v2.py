@@ -7,6 +7,8 @@ Baseline V2 visual input intentionally contains only:
 
 The optional full original outfit image is deliberately outside this contract so
 it can be evaluated later as a separate ablation without changing the baseline.
+Raw scorer/LOO/recommendation scores remain internal and are projected out before
+prompt construction.
 """
 
 from __future__ import annotations
@@ -16,10 +18,11 @@ from pathlib import Path
 from typing import Mapping, Sequence
 from urllib.parse import urlparse
 
-from .schema_v2 import EVIDENCE_SCHEMA_VERSION_V2, validate_vlm_evidence_v2
+from .schema_v2 import validate_vlm_evidence_v2
 
 
 VISUAL_ANALYSIS_SCHEMA_VERSION_V2 = "vlm-visual-analysis-v2"
+PROMPT_CONTEXT_SCHEMA_VERSION_V2 = "vlm-prompt-context-v2"
 
 VISUAL_DIMENSIONS_V2 = (
     "color_harmony",
@@ -66,6 +69,9 @@ image-grounded visual evidence that can help explain the fixed decisions.
 
 Think of your output as internal evidence for a deterministic renderer, not as a
 vote on whether the upstream system was right. Do not write user-facing prose.
+Raw numerical scorer, LOO, and recommendation values are intentionally omitted
+from your prompt context so that visual judgments are based on images rather than
+score anchoring. Never reconstruct or guess those values.
 
 Hard rules:
 1. Copy diagnosis.problematic_item_index and problematic_item_id exactly. Never
@@ -105,10 +111,8 @@ Hard rules:
 10. Do not compare recommendation candidates against each other to decide their
     rank. Their rank is already frozen. Your task is to explain each candidate's
     relation to the remaining outfit, not to recreate the ranking.
-11. Treat scorer logits, LOO deltas, and recommendation improvement logits as
-    uncalibrated model outputs. Never turn them into probabilities, percentages,
-    confidence scores, or visual evidence. Never infer a visual label from a
-    numerical score.
+11. Do not derive visual labels from rank, category metadata, or any hidden score
+    you imagine might exist. Rank identifies presentation order only.
 12. Copy the exact required limitations list, including the conditional
     loo_uses_two_item_extrapolation token when requested.
 13. Return exactly one JSON object with no Markdown fence and no extra keys.
@@ -135,6 +139,50 @@ def required_limitations_v2(evidence: Mapping[str, object]) -> tuple[str, ...]:
     if normalized["diagnosis"]["uses_two_item_extrapolation"]:
         limitations.append(TWO_ITEM_EXTRAPOLATION_LIMITATION)
     return tuple(limitations)
+
+
+def build_prompt_context_v2(evidence: Mapping[str, object]) -> dict:
+    """Project full internal evidence into a score-free context for Qwen.
+
+    Qwen needs authoritative identities, categories, and ranks plus the images.
+    It does not need scorer logits, LOO deltas, recommendation improvements,
+    checkpoint metadata, or benchmark/audit state. Keeping those values out of
+    the prompt reduces numerical anchoring while full evidence remains available
+    to deterministic validators and renderers.
+    """
+
+    normalized = validate_vlm_evidence_v2(evidence)
+    diagnosis = normalized["diagnosis"]
+    return {
+        "schema_version": PROMPT_CONTEXT_SCHEMA_VERSION_V2,
+        "items": [
+            {
+                "item_index": int(row["item_index"]),
+                "item_id": str(row["item_id"]),
+                "coarse_category": str(row["coarse_category"]),
+            }
+            for row in normalized["items"]
+        ],
+        "diagnosis": {
+            "problematic_item_index": int(diagnosis["problematic_item_index"]),
+            "problematic_item_id": str(diagnosis["problematic_item_id"]),
+            "problematic_category": str(diagnosis["problematic_category"]),
+            "uses_two_item_extrapolation": bool(
+                diagnosis["uses_two_item_extrapolation"]
+            ),
+        },
+        "recommendation": {
+            "items": [
+                {
+                    "rank": int(candidate["rank"]),
+                    "item_id": str(candidate["item_id"]),
+                    "master_category": str(candidate["master_category"]),
+                    "coarse_category": str(candidate["coarse_category"]),
+                }
+                for candidate in normalized["recommendation"]["items"]
+            ]
+        },
+    }
 
 
 def _normalize_image_ref_v2(value: object, *, must_exist: bool) -> str:
@@ -174,7 +222,9 @@ def _normalize_recommendation_image_refs(
         )
     if any(not isinstance(key, str) for key in recommendation_image_refs):
         raise TypeError("recommendation_image_refs keys must be candidate item_id strings")
-    candidate_ids = [str(row["item_id"]) for row in evidence["recommendation"]["items"]]
+    candidate_ids = [
+        str(row["item_id"]) for row in evidence["recommendation"]["items"]
+    ]
     supplied_keys = set(recommendation_image_refs)
     expected_keys = set(candidate_ids)
     if supplied_keys != expected_keys:
@@ -328,11 +378,11 @@ def _output_contract_text_v2(evidence: Mapping[str, object]) -> str:
         f"  * confidence: choose one of {list(VISUAL_CONFIDENCE_LEVELS_V2)}.\n"
         "- If any visual_observations list is empty, its overall_visual_support must be "
         "ambiguous. Otherwise the overall label must summarize the visible observations. "
-        "Never force support from scorer/LOO/recommendation numbers.\n"
+        "Never force support from rank or metadata.\n"
         f"- limitations must be exactly this JSON array: {json.dumps(limitations, ensure_ascii=False)}.\n"
         "Before producing JSON, inspect all supplied images. Your goal is useful grounded "
-        "evidence for an already-fixed decision, not a second fashion verdict. Do not infer "
-        "visual support from numerical scores and do not copy a semantic default from these "
+        "evidence for an already-fixed decision, not a second fashion verdict. Raw numerical "
+        "scores are not part of your context. Do not copy a semantic default from these "
         "schema instructions."
     )
 
@@ -346,15 +396,17 @@ def build_qwen_messages_v2(
     max_pixels: int,
     must_exist: bool = True,
 ) -> list[dict]:
-    """Bind original garment crops + authoritative Top-3 images to V2 evidence.
+    """Bind original garment crops + authoritative Top-3 images to score-free context.
 
     Outfit crops remain positional because item_index is canonical and already
     frozen by V1. Recommendation images are keyed by item_id rather than passed
     positionally; this prevents an accidental rank/image mismatch at the caller
-    boundary.
+    boundary. Full internal evidence is validated first, then projected so raw
+    numerical scores never enter the Qwen prompt.
     """
 
     normalized = validate_vlm_evidence_v2(evidence)
+    prompt_context = build_prompt_context_v2(normalized)
     items = normalized["items"]
     if isinstance(outfit_image_refs, (str, bytes)) or not isinstance(
         outfit_image_refs, Sequence
@@ -440,15 +492,17 @@ def build_qwen_messages_v2(
             }
         )
 
-    prompt_payload = json.dumps(normalized, indent=2, ensure_ascii=False)
+    prompt_payload = json.dumps(prompt_context, indent=2, ensure_ascii=False)
     output_contract = _output_contract_text_v2(normalized)
 
     content.append(
         {
             "type": "text",
             "text": (
-                f"The following {EVIDENCE_SCHEMA_VERSION_V2} JSON is authoritative.\n"
-                f"EVIDENCE:\n{prompt_payload}\n\n"
+                f"The following {PROMPT_CONTEXT_SCHEMA_VERSION_V2} JSON is the complete "
+                "machine context intentionally exposed to you. Raw scorer, LOO, and "
+                "recommendation numerical values are deliberately omitted.\n"
+                f"CONTEXT:\n{prompt_payload}\n\n"
                 "Inspect the supplied images first. Remember: the problematic item and Top-3 "
                 "candidate identities/ranks are already fixed; your task is to extract useful "
                 "grounded visual evidence for those decisions, not to make new decisions. "
@@ -495,9 +549,10 @@ def append_repair_request_v2(
                         "clear positive reason is visible, use ambiguous with an empty "
                         "visual_observations list rather than negative filler or invented "
                         "support. Do not clone the same non-ambiguous high-confidence "
-                        "recommendation analysis across all three candidates. Use only enum "
-                        "tokens from the output contract. Repair schema or identity mistakes "
-                        "without replacing image-grounded labels with mechanical defaults."
+                        "recommendation analysis across all three candidates. Do not infer "
+                        "visual labels from rank or imagined scores. Use only enum tokens "
+                        "from the output contract. Repair schema or identity mistakes without "
+                        "replacing image-grounded labels with mechanical defaults."
                     ),
                 }
             ],
