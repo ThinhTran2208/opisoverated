@@ -183,9 +183,7 @@ def render_user_facing_vi_v2(
         problem_index=problem_index,
         category_by_index=category_by_index,
     )
-    problematic_reason = diagnosis_reason or (
-        "Đây là món được ưu tiên thay để cải thiện độ phù hợp tổng thể của outfit."
-    )
+    problematic_reason = diagnosis_reason or ""
 
     authoritative_candidates = normalized_evidence["recommendation"]["items"]
     all_improve = all(float(row["improvement_logit"]) > 0 for row in authoritative_candidates)
@@ -242,13 +240,15 @@ def render_user_facing_vi_v2(
     )
 
     final_text = " ".join(
-        [
+        part
+        for part in [
             problematic_headline,
             problematic_reason,
             summary,
             *recommendation_sentences,
             caution,
         ]
+        if part
     )
 
     return {
