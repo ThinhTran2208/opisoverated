@@ -27,6 +27,7 @@ from .prompt_v2 import (
     expected_output_shape_v2,
     required_limitations_v2,
 )
+from .qwen_backend_v2 import Qwen3VLBackendV2
 from .schema import (
     EVIDENCE_SCHEMA_VERSION,
     build_vlm_evidence,
@@ -51,6 +52,7 @@ __all__ = [
     "EXPLANATION_SCHEMA_VERSION_V2",
     "GROUNDING_RULES_V2",
     "HANDOFF_SCHEMA_VERSION_V2",
+    "Qwen3VLBackendV2",
     "RUN_SCHEMA_VERSION_V2",
     "VISUAL_ANALYSIS_SCHEMA_VERSION_V2",
     "VLMExplanationPipeline",
