@@ -1,4 +1,4 @@
-"""Tests for deterministic VLM V2 rendering and end-to-end handoff wrapper."""
+"""Tests for deterministic VLM V2 rendering and handoff boundaries."""
 
 import json
 import unittest
@@ -14,6 +14,7 @@ from src.vlm.pipeline_v2 import (
 )
 from src.vlm.prompt_v2 import expected_output_shape_v2
 from src.vlm.schema_v2 import build_vlm_evidence_v2
+from src.vlm.user_renderer_v2 import USER_FACING_SCHEMA_VERSION_V2
 
 
 def loo_fixture():
@@ -150,7 +151,7 @@ class FakeBackend:
 
 
 class VlmPipelineV2Tests(unittest.TestCase):
-    def test_renderer_contains_diagnosis_and_authoritative_top3(self):
+    def test_internal_renderer_keeps_audit_scores(self):
         evidence = evidence_fixture()
         analysis = expected_output_shape_v2(evidence)
         rendered = render_explanation_vi_v2(analysis, evidence)
@@ -166,7 +167,7 @@ class VlmPipelineV2Tests(unittest.TestCase):
         self.assertIn("không phải xác suất", rendered["recommendations"][0]["score_summary"])
         self.assertIn("Qwen chỉ bổ sung", rendered["explanation"])
 
-    def test_handoff_is_compact_and_does_not_expose_private_evidence_or_raw_text(self):
+    def test_handoff_is_score_free_but_preserves_ids_rank_and_visual_evidence(self):
         evidence = evidence_fixture()
         rendered = render_explanation_vi_v2(expected_output_shape_v2(evidence), evidence)
         handoff = build_handoff_result_v2(
@@ -178,12 +179,25 @@ class VlmPipelineV2Tests(unittest.TestCase):
         self.assertEqual(handoff["schema_version"], HANDOFF_SCHEMA_VERSION_V2)
         self.assertEqual(handoff["protocol_version"], VLM_PROTOCOL_VERSION_V2)
         self.assertEqual(len(handoff["recommendations"]), 3)
+        self.assertEqual(
+            [row["item_id"] for row in handoff["recommendations"]],
+            ["candidate-a", "candidate-b", "candidate-c"],
+        )
         serialized = json.dumps(handoff, ensure_ascii=False)
-        self.assertNotIn('"evidence"', serialized)
-        self.assertNotIn('"raw_response"', serialized)
-        self.assertNotIn('"visual_analysis"', serialized)
+        for forbidden in (
+            "compatibility_logit",
+            "improvement_logit",
+            "without_item_logit",
+            "loo_delta",
+            "score_summary",
+            '"model_id"',
+            '"generation_attempts"',
+            '"raw_response"',
+            '"evidence"',
+        ):
+            self.assertNotIn(forbidden, serialized)
 
-    def test_pipeline_returns_internal_run_and_deploy_handoff(self):
+    def test_pipeline_returns_internal_run_score_free_handoff_and_user_facing(self):
         evidence = evidence_fixture()
         valid_response = json.dumps(expected_output_shape_v2(evidence), ensure_ascii=False)
         backend = FakeBackend([valid_response])
@@ -200,12 +214,21 @@ class VlmPipelineV2Tests(unittest.TestCase):
         self.assertEqual(run["protocol_version"], VLM_PROTOCOL_VERSION_V2)
         self.assertEqual(run["generation_attempts"], 1)
         self.assertEqual(run["handoff"]["schema_version"], HANDOFF_SCHEMA_VERSION_V2)
+        self.assertEqual(run["user_facing"]["schema_version"], USER_FACING_SCHEMA_VERSION_V2)
         self.assertEqual(run["handoff"]["problematic_item_id"], "bottom")
         self.assertEqual(
             [row["item_id"] for row in run["handoff"]["recommendations"]],
             ["candidate-a", "candidate-b", "candidate-c"],
         )
+        public_serialized = json.dumps(
+            {"handoff": run["handoff"], "user_facing": run["user_facing"]},
+            ensure_ascii=False,
+        )
+        self.assertNotIn("compatibility_logit", public_serialized)
+        self.assertNotIn("improvement_logit", public_serialized)
+        self.assertNotIn("score_summary", public_serialized)
         self.assertIn("raw_response", run)
+        self.assertIn("compatibility_logit", json.dumps(run["evidence"]))
         self.assertEqual(backend.calls, 1)
 
     def test_pipeline_repairs_one_invalid_model_response(self):
