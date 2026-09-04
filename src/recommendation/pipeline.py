@@ -202,9 +202,14 @@ class RecommendationPipeline:
         bundle = MLFinalDirectoryBundle(artifact_root)
         catalog = bundle.load_embedding_catalog()
         metadata = bundle.load_metadata_index()
-        # Do not force a hard global image count in directory mode. Evaluation
-        # reports exact coverage so partial image directories cannot pass silently.
-        image_resolver = DirectoryImageResolver(image_root, expected_count=None)
+        # Important for very large mounted Drive folders: do not enumerate all
+        # image files. Declare the frozen embedding item inventory and resolve
+        # concrete image files lazily only when evaluation/runtime reads them.
+        image_resolver = DirectoryImageResolver(
+            image_root,
+            expected_count=int(config.get("expected_image_count", 142_480)),
+            known_item_ids=catalog.item_ids,
+        )
         return cls._build(
             config=config,
             bundle=bundle,
