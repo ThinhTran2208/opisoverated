@@ -1,9 +1,9 @@
 """Deploy-facing Vietnamese renderer for VLM V2.
 
-This module deliberately separates user-facing copy from internal scorer/LOO/Qwen
-artifacts. The authoritative identities and ranks still come from validated
-VLM V2 evidence/analysis, but the returned prose avoids implementation terms
-such as LOO, Qwen, logits, validator names, and raw confidence taxonomy.
+The internal VLM analysis may record support, ambiguity, or disagreement for
+quality control. End users should not see that internal debate. The authoritative
+problematic item and Top-3 recommendation ranks come from the frozen upstream
+pipeline; Qwen contributes only optional image-grounded visual reasons.
 """
 
 from __future__ import annotations
@@ -17,16 +17,6 @@ from .schema_v2 import validate_vlm_evidence_v2
 
 USER_FACING_SCHEMA_VERSION_V2 = "vlm-user-facing-v2"
 
-_DIMENSION_NOUN_VI = {
-    "color_harmony": "màu sắc",
-    "pattern_coherence": "họa tiết",
-    "silhouette_balance": "phom dáng",
-    "formality_alignment": "mức độ trang trọng",
-    "style_coherence": "phong cách tổng thể",
-}
-
-# Natural nouns for end-user prose. These deliberately use the frozen coarse
-# category rather than asking Qwen to invent a more specific garment subtype.
 _CURRENT_ITEM_LABEL_VI = {
     "TOP": "Chiếc áo hiện tại",
     "BOTTOM": "Món quần/váy hiện tại",
@@ -47,130 +37,126 @@ _RECOMMENDATION_NOUN_VI = {
     "HAT": "mẫu mũ",
 }
 
+_CONTEXT_NOUN_VI = {
+    "TOP": "áo",
+    "BOTTOM": "quần/váy",
+    "DRESS": "váy liền",
+    "OUTERWEAR": "áo khoác",
+    "SHOES": "giày",
+    "BAG": "túi",
+    "HAT": "mũ",
+}
+
 _DIAGNOSIS_SUPPORT_PHRASES = {
-    "color_harmony": "màu sắc chưa hòa hợp tốt với {context}",
+    "color_harmony": "màu sắc chưa phối hợp tốt với {context}",
     "pattern_coherence": "họa tiết chưa ăn khớp tốt với {context}",
     "silhouette_balance": "phom dáng chưa cân bằng tốt với {context}",
     "formality_alignment": "mức độ trang trọng chưa đồng nhất với {context}",
     "style_coherence": "phong cách tổng thể chưa đồng nhất với {context}",
 }
 
-_DIAGNOSIS_CONTRADICT_PHRASES = {
-    "color_harmony": "màu sắc vẫn khá hòa hợp với {context}",
-    "pattern_coherence": "họa tiết vẫn khá ăn khớp với {context}",
-    "silhouette_balance": "phom dáng vẫn khá cân bằng với {context}",
-    "formality_alignment": "mức độ trang trọng vẫn khá đồng nhất với {context}",
-    "style_coherence": "phong cách tổng thể vẫn khá đồng nhất với {context}",
-}
-
 _RECOMMENDATION_SUPPORT_PHRASES = {
-    "color_harmony": "màu sắc hài hòa với các món còn lại",
+    "color_harmony": "màu sắc phối hợp tốt với các món còn lại",
     "pattern_coherence": "họa tiết phối hợp tốt với các món còn lại",
-    "silhouette_balance": "phom dáng giúp outfit cân đối hơn",
-    "formality_alignment": "mức độ trang trọng phù hợp với outfit",
-    "style_coherence": "phong cách tổng thể đồng nhất với outfit",
-}
-
-_RECOMMENDATION_CONTRADICT_PHRASES = {
-    "color_harmony": "màu sắc chưa thật sự hòa hợp với các món còn lại",
-    "pattern_coherence": "họa tiết chưa thật sự ăn khớp với các món còn lại",
-    "silhouette_balance": "phom dáng chưa tạo được sự cân bằng rõ ràng",
-    "formality_alignment": "mức độ trang trọng chưa thật sự đồng nhất với outfit",
-    "style_coherence": "phong cách tổng thể chưa thật sự đồng nhất với outfit",
+    "silhouette_balance": "phom dáng giúp tổng thể outfit cân đối hơn",
+    "formality_alignment": "mức độ trang trọng phù hợp với các món còn lại",
+    "style_coherence": "phong cách tổng thể đồng nhất hơn với outfit",
 }
 
 
-def _context_label(indices: list[int], problem_index: int) -> str:
-    context = [index for index in indices if index != problem_index]
-    if not context:
+def _join_vi(values: list[str]) -> str:
+    unique: list[str] = []
+    for value in values:
+        if value not in unique:
+            unique.append(value)
+    if not unique:
         return "các món còn lại"
-    if len(context) == 1:
-        return f"món số {context[0] + 1}"
-    return "các món số " + ", ".join(str(index + 1) for index in context)
+    if len(unique) == 1:
+        return unique[0]
+    if len(unique) == 2:
+        return f"{unique[0]} và {unique[1]}"
+    return ", ".join(unique[:-1]) + f" và {unique[-1]}"
 
 
-def _diagnosis_observation_text(row: Mapping[str, object], problem_index: int) -> str:
-    dimension = str(row["dimension"])
-    effect = str(row["effect"])
-    context = _context_label(list(row["item_indices"]), problem_index)
-
-    if effect == "supports_loo":
-        template = _DIAGNOSIS_SUPPORT_PHRASES[dimension]
-        return template.format(context=context)
-    if effect == "contradicts_loo":
-        template = _DIAGNOSIS_CONTRADICT_PHRASES[dimension]
-        return template.format(context=context)
-    return f"{_DIMENSION_NOUN_VI[dimension]} chưa cho tín hiệu đủ rõ khi so với {context}"
-
-
-def _diagnosis_reason(analysis: Mapping[str, object], problem_index: int) -> str:
-    overall = str(analysis["overall_visual_support"])
-    observations = list(analysis["visual_observations"])
-    details = [_diagnosis_observation_text(row, problem_index) for row in observations[:2]]
-
-    if overall == "supports_loo":
-        prefix = "Hình ảnh cũng cho thấy món này có dấu hiệu kém phù hợp với outfit"
-    elif overall == "contradicts_loo":
-        prefix = (
-            "Tuy nhiên, khi nhìn riêng về mặt thị giác, món này không có dấu hiệu lệch outfit quá rõ"
-        )
-    else:
-        prefix = "Hình ảnh chưa cho thấy dấu hiệu lệch outfit đủ rõ"
-
-    if details:
-        return prefix + ": " + "; ".join(details) + "."
-    return prefix + "."
-
-
-def _recommendation_reason(
-    visual: Mapping[str, object],
-    *,
-    display_name: str,
+def _context_label(
+    indices: list[int],
+    problem_index: int,
+    category_by_index: Mapping[int, str],
 ) -> str:
-    overall = str(visual["overall_visual_support"])
-    observations = list(visual["visual_observations"])
+    labels = [
+        _CONTEXT_NOUN_VI[category_by_index[index]]
+        for index in indices
+        if index != problem_index and index in category_by_index
+    ]
+    return _join_vi(labels)
 
-    if overall == "ambiguous":
-        return (
-            f"{display_name} chưa cho thấy ưu điểm thị giác đủ rõ để nổi bật hơn "
-            "các lựa chọn còn lại."
-        )
+
+def _diagnosis_support_reason(
+    analysis: Mapping[str, object],
+    *,
+    problem_index: int,
+    category_by_index: Mapping[int, str],
+) -> str | None:
+    if str(analysis["overall_visual_support"]) != "supports_loo":
+        return None
 
     phrases: list[str] = []
-    for row in observations[:2]:
+    for row in analysis["visual_observations"]:
+        if row["effect"] != "supports_loo":
+            continue
         dimension = str(row["dimension"])
-        effect = str(row["effect"])
-        if effect == "supports_recommendation":
-            phrases.append(_RECOMMENDATION_SUPPORT_PHRASES[dimension])
-        elif effect == "contradicts_recommendation":
-            phrases.append(_RECOMMENDATION_CONTRADICT_PHRASES[dimension])
-
-    if overall == "supports_recommendation":
-        if phrases:
-            return f"{display_name} phù hợp về mặt thị giác vì " + "; ".join(phrases) + "."
-        return f"{display_name} có tín hiệu thị giác tích cực khi đặt cạnh các món còn lại."
-
-    if phrases:
-        return (
-            f"{display_name} vẫn là một phương án thay thế, nhưng đánh giá hình ảnh chưa "
-            "ủng hộ mạnh vì "
-            + "; ".join(phrases)
-            + "."
+        context = _context_label(
+            list(row["item_indices"]),
+            problem_index,
+            category_by_index,
         )
-    return (
-        f"{display_name} vẫn là một phương án thay thế, nhưng đánh giá hình ảnh chưa ủng hộ mạnh."
-    )
+        phrases.append(_DIAGNOSIS_SUPPORT_PHRASES[dimension].format(context=context))
+        if len(phrases) == 2:
+            break
+
+    if not phrases:
+        return None
+    if len(phrases) == 1:
+        return "Điểm chưa phù hợp dễ thấy nhất là " + phrases[0] + "."
+    return "Các điểm chưa phù hợp dễ thấy là " + "; ".join(phrases) + "."
+
+
+def _recommendation_support_reason(visual: Mapping[str, object]) -> str | None:
+    if str(visual["overall_visual_support"]) != "supports_recommendation":
+        return None
+
+    phrases: list[str] = []
+    for row in visual["visual_observations"]:
+        if row["effect"] != "supports_recommendation":
+            continue
+        phrases.append(_RECOMMENDATION_SUPPORT_PHRASES[str(row["dimension"])])
+        if len(phrases) == 2:
+            break
+
+    if not phrases:
+        return None
+    return "; ".join(phrases)
+
+
+def _rank_lead(display_name: str, rank: int) -> str:
+    if rank == 1:
+        return f"{display_name} là lựa chọn được xếp hạng đầu tiên"
+    if rank == 2:
+        return f"{display_name} là phương án thay thế thứ hai"
+    return f"{display_name} là phương án thay thế thứ ba"
 
 
 def render_user_facing_vi_v2(
     analysis: Mapping[str, object],
     evidence: Mapping[str, object],
 ) -> dict:
-    """Return a concise deploy-facing Vietnamese payload for end users.
+    """Render a decisive end-user explanation without exposing internal debate.
 
-    Machine identities/ranks are preserved so the frontend can bind the correct
-    images, while all prose is intentionally free of internal implementation
-    vocabulary. Raw scorer/recommendation logits stay in the internal run only.
+    Upstream diagnosis and recommendation ranks remain authoritative. Qwen's
+    visual analysis is used only when it provides positive, image-grounded
+    evidence that helps explain an already-fixed decision. Ambiguous or
+    contradictory internal visual labels are retained in ``vlm-run-v2`` for QA
+    but are deliberately not surfaced as user-facing counter-arguments.
     """
 
     normalized_evidence = validate_vlm_evidence_v2(evidence)
@@ -181,26 +167,62 @@ def render_user_facing_vi_v2(
     problem_id = str(diagnosis["problematic_item_id"])
     problem_coarse = str(diagnosis["problematic_category"])
     problem_category = CATEGORY_LABELS_VI[problem_coarse]
-    diagnosis_visual = normalized_analysis["diagnosis"]
-
     current_item_label = _CURRENT_ITEM_LABEL_VI[problem_coarse]
+    current_item_inline = current_item_label[0].lower() + current_item_label[1:]
+
+    category_by_index = {
+        int(row["item_index"]): str(row["coarse_category"])
+        for row in normalized_evidence["items"]
+    }
+
     problematic_headline = (
-        f"{current_item_label} được hệ thống đánh giá là món kém phù hợp nhất với outfit."
+        f"{current_item_label} là món được đánh giá kém phù hợp nhất và được ưu tiên thay trong outfit."
     )
-    problematic_reason = _diagnosis_reason(diagnosis_visual, problem_index)
+    diagnosis_reason = _diagnosis_support_reason(
+        normalized_analysis["diagnosis"],
+        problem_index=problem_index,
+        category_by_index=category_by_index,
+    )
+    problematic_reason = diagnosis_reason or (
+        "Đây là món được ưu tiên thay để cải thiện độ phù hợp tổng thể của outfit."
+    )
+
+    authoritative_candidates = normalized_evidence["recommendation"]["items"]
+    all_improve = all(float(row["improvement_logit"]) > 0 for row in authoritative_candidates)
+    replacement_noun = _RECOMMENDATION_NOUN_VI[problem_coarse]
+    if all_improve:
+        summary = (
+            f"Cả ba {replacement_noun} bên dưới đều được đánh giá phù hợp hơn khi thay cho "
+            f"{current_item_inline}."
+        )
+    else:
+        summary = (
+            f"Ba {replacement_noun} bên dưới là các phương án thay thế được xếp hạng cao nhất "
+            f"cho {current_item_inline}."
+        )
 
     analysis_by_id = {
         str(row["item_id"]): row for row in normalized_analysis["recommendations"]
     }
     recommendations: list[dict[str, object]] = []
     recommendation_sentences: list[str] = []
-    for candidate in normalized_evidence["recommendation"]["items"]:
+
+    for candidate in authoritative_candidates:
         rank = int(candidate["rank"])
         item_id = str(candidate["item_id"])
         coarse_category = str(candidate["coarse_category"])
         display_name = f"{_RECOMMENDATION_NOUN_VI[coarse_category].capitalize()} {rank}"
-        visual = analysis_by_id[item_id]
-        reason = _recommendation_reason(visual, display_name=display_name)
+        lead = _rank_lead(display_name, rank)
+        improves_original = float(candidate["improvement_logit"]) > 0
+        visual_reason = _recommendation_support_reason(analysis_by_id[item_id])
+
+        if visual_reason:
+            reason = f"{lead}; {visual_reason}."
+        elif improves_original:
+            reason = f"{lead} và được đánh giá phù hợp hơn {current_item_inline}."
+        else:
+            reason = f"{lead} trong ba lựa chọn được đề xuất."
+
         recommendation_sentences.append(reason)
         recommendations.append(
             {
@@ -214,29 +236,10 @@ def render_user_facing_vi_v2(
             }
         )
 
-    replacement_noun = _RECOMMENDATION_NOUN_VI[problem_coarse]
-    summary = (
-        f"Bạn có thể thử thay món này bằng một trong ba {replacement_noun} bên dưới để "
-        "outfit hài hòa hơn."
+    caution = (
+        f"Bạn có thể tham khảo ba phương án trên để thay cho {current_item_inline} và chọn mẫu "
+        "phù hợp nhất với sở thích của mình."
     )
-
-    overall = str(diagnosis_visual["overall_visual_support"])
-    if overall == "contradicts_loo":
-        caution = (
-            "Đánh giá hình ảnh và điểm tương thích của hệ thống chưa hoàn toàn đồng thuận, "
-            "nên bạn có thể xem các phương án thay thế như những lựa chọn để thử thay vì "
-            "một kết luận chắc chắn."
-        )
-    elif overall == "ambiguous":
-        caution = (
-            "Hình ảnh chưa cho tín hiệu đủ rõ về món hiện tại, nên bạn có thể thử các phương án "
-            "thay thế và chọn lựa chọn hợp mắt nhất."
-        )
-    else:
-        caution = (
-            "Các phương án dưới đây được hệ thống ưu tiên; bạn vẫn có thể chọn lựa chọn phù hợp "
-            "nhất với sở thích cá nhân."
-        )
 
     final_text = " ".join(
         [
