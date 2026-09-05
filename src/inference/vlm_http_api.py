@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Dedicated HTTP service for Qwen VLM Explanation V1.
+"""Dedicated HTTP service for Qwen VLM Explanation V1/V2.
 
 This service intentionally lives in a separate Python environment from RF-DETR.
 The model is loaded lazily on the first explanation request so health checks and
@@ -34,6 +34,12 @@ VLM_CONFIG_PATH = Path(
         str(REPO_ROOT / "configs" / "vlm_qwen3_vl_4b_instruct_v1.json"),
     )
 )
+VLM_V2_CONFIG_PATH = Path(
+    os.environ.get(
+        "FASHION_VLM_V2_CONFIG",
+        str(REPO_ROOT / "configs" / "vlm_qwen3_vl_4b_instruct_v2.json"),
+    )
+)
 MAX_CROP_BYTES = int(os.environ.get("FASHION_VLM_MAX_CROP_BYTES", str(5 * 1024 * 1024)))
 
 
@@ -55,7 +61,36 @@ class LazyVLMRuntime:
         return self._adapter
 
 
+class LazyVLMRuntimeV2:
+    """Lazy loader for the canonical VLM V2 pipeline."""
+
+    def __init__(self, config_path: Path | str) -> None:
+        self.config_path = Path(config_path)
+        self._adapter = None
+        self._lock = threading.Lock()
+
+    @property
+    def loaded(self) -> bool:
+        return self._adapter is not None
+
+    def get_adapter(self):
+        if self._adapter is None:
+            with self._lock:
+                if self._adapter is None:
+                    from src.vlm import (
+                        Qwen3VLBackendV2,
+                        VLMExplanationPipelineV2,
+                        load_vlm_config_v2,
+                    )
+
+                    config = load_vlm_config_v2(self.config_path)
+                    backend = Qwen3VLBackendV2.from_config(config)
+                    self._adapter = VLMExplanationPipelineV2(backend, config)
+        return self._adapter
+
+
 runtime = LazyVLMRuntime(VLM_CONFIG_PATH)
+runtime_v2 = LazyVLMRuntimeV2(VLM_V2_CONFIG_PATH)
 
 
 def _decode_crop(value: object, *, index: int, directory: Path) -> Path:
@@ -84,16 +119,26 @@ def _decode_crop(value: object, *, index: int, directory: Path) -> Path:
     return path
 
 
-def create_app(vlm_runtime: LazyVLMRuntime) -> FastAPI:
-    application = FastAPI(title="Outfit VLM Explanation V1", version="vlm-explanation-v1")
+def create_app(
+    vlm_runtime: LazyVLMRuntime,
+    vlm_runtime_v2: LazyVLMRuntimeV2 | None = None,
+) -> FastAPI:
+    application = FastAPI(title="Outfit VLM Explanation", version="vlm-explanation-v2")
 
     @application.get("/healthz")
     def healthz():
         return {
             "status": "ok",
-            "service": "vlm-explanation-v1",
+            "service": "vlm-explanation",
             "model_loaded": vlm_runtime.loaded,
             "config_path": str(vlm_runtime.config_path),
+            "v2_available": vlm_runtime_v2 is not None,
+            "v2_config_path": (
+                None if vlm_runtime_v2 is None else str(vlm_runtime_v2.config_path)
+            ),
+            "v2_model_loaded": (
+                False if vlm_runtime_v2 is None else vlm_runtime_v2.loaded
+            ),
         }
 
     @application.post("/v1/explain")
@@ -146,7 +191,7 @@ def create_app(vlm_runtime: LazyVLMRuntime) -> FastAPI:
                 status_code=422,
                 content={"status": "error", "error": str(error)},
             )
-        except RuntimeError as error:
+        except (ImportError, OSError, RuntimeError) as error:
             return JSONResponse(
                 status_code=503,
                 content={"status": "error", "error": str(error)},
@@ -154,7 +199,100 @@ def create_app(vlm_runtime: LazyVLMRuntime) -> FastAPI:
 
         return {"status": "ok", "explanation": explanation}
 
+    @application.post("/v2/explain")
+    def explain_v2(payload: dict):
+        if vlm_runtime_v2 is None:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "error", "error": "VLM V2 is not configured"},
+            )
+
+        sample_id = payload.get("sample_id")
+        evidence = payload.get("evidence")
+        outfit_images = payload.get("outfit_images")
+        recommendation_images = payload.get("recommendation_images")
+        if not isinstance(sample_id, str) or not sample_id.strip():
+            return JSONResponse(
+                status_code=422,
+                content={"status": "error", "error": "sample_id must be non-empty"},
+            )
+        if not isinstance(evidence, Mapping):
+            return JSONResponse(
+                status_code=422,
+                content={"status": "error", "error": "evidence must be an object"},
+            )
+        evidence_sample_id = evidence.get("sample_id")
+        if evidence_sample_id is not None and str(evidence_sample_id) != sample_id:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "status": "error",
+                    "error": "evidence.sample_id must match sample_id",
+                },
+            )
+        if not isinstance(outfit_images, list) or not outfit_images:
+            return JSONResponse(
+                status_code=422,
+                content={"status": "error", "error": "outfit_images must be a non-empty list"},
+            )
+        if not isinstance(recommendation_images, Mapping):
+            return JSONResponse(
+                status_code=422,
+                content={"status": "error", "error": "recommendation_images must be an object"},
+            )
+        if len(recommendation_images) != 3:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "status": "error",
+                    "error": "recommendation_images must contain exactly three items",
+                },
+            )
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="vlm-v2-images-") as directory:
+                root = Path(directory)
+                outfit_refs = [
+                    _decode_crop(value, index=index, directory=root)
+                    for index, value in enumerate(outfit_images)
+                ]
+                recommendation_refs: dict[str, Path] = {}
+                for index, (item_id, value) in enumerate(recommendation_images.items()):
+                    if not isinstance(item_id, str) or not item_id.strip():
+                        raise ValueError("recommendation image keys must be non-empty strings")
+                    recommendation_refs[item_id] = _decode_crop(
+                        value, index=len(outfit_refs) + index, directory=root
+                    )
+
+                run = vlm_runtime_v2.get_adapter().explain(
+                    evidence,
+                    outfit_refs,
+                    recommendation_refs,
+                    must_exist=True,
+                )
+        except (TypeError, ValueError, FileNotFoundError) as error:
+            return JSONResponse(
+                status_code=422,
+                content={"status": "error", "error": str(error)},
+            )
+        except RuntimeError as error:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "error", "error": str(error)},
+            )
+
+        if not isinstance(run, Mapping) or "user_facing" not in run:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "error", "error": "VLM V2 returned an invalid run"},
+            )
+        return {
+            "status": "ok",
+            "protocol_version": "vlm-explanation-v2",
+            "explanation": run["user_facing"],
+        }
+
     return application
 
 
-app = create_app(runtime)
+app = create_app(runtime, runtime_v2)

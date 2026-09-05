@@ -5,7 +5,9 @@ from .adapters import (
     DetectionAdapter,
     ExplanationProvider,
     GarmentPreprocessor,
+    RecommendationProvider,
     RemoteVLMAdapter,
+    RemoteVLMAdapterV2,
     VLMAdapter,
     VLMServiceError,
 )
@@ -21,10 +23,12 @@ __all__ = [
     "DetectionAdapter",
     "ExplanationProvider",
     "GarmentPreprocessor",
+    "RecommendationProvider",
     "InferenceContext",
     "InferenceInputError",
     "ProductionInferencePipeline",
     "RemoteVLMAdapter",
+    "RemoteVLMAdapterV2",
     "VLMAdapter",
     "VLMServiceError",
 ]

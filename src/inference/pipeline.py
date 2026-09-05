@@ -87,7 +87,7 @@ class ProductionInferencePipeline:
     Canonical image flow:
 
     DetectionAdapter -> InferenceContext -> scorer -> calibration -> LOO
-                     -> VLMAdapter(raw LOO, garments, crop refs)
+                     -> Recommendation V2 (optional) -> VLMAdapter (optional)
     """
 
     def __init__(
@@ -100,6 +100,7 @@ class ProductionInferencePipeline:
         embedding_version: str = "fashionclip-512-l2-v1",
         detection_adapter=None,
         vlm_adapter=None,
+        recommendation_provider=None,
         # Compatibility aliases for the first production-inference draft.
         garment_preprocessor=None,
         explanation_provider=None,
@@ -117,6 +118,7 @@ class ProductionInferencePipeline:
         self.embedding_version = str(embedding_version)
         self.detection_adapter = detection_adapter or garment_preprocessor
         self.vlm_adapter = vlm_adapter or explanation_provider
+        self.recommendation_provider = recommendation_provider
         # Old attributes remain readable for downstream code during migration.
         self.garment_preprocessor = self.detection_adapter
         self.explanation_provider = self.vlm_adapter
@@ -155,6 +157,7 @@ class ProductionInferencePipeline:
         device: str | object = "cpu",
         detection_adapter=None,
         vlm_adapter=None,
+        recommendation_provider=None,
         garment_preprocessor=None,
         explanation_provider=None,
     ) -> "ProductionInferencePipeline":
@@ -204,6 +207,7 @@ class ProductionInferencePipeline:
             embedding_version=str(manifest["embedding_version"]),
             detection_adapter=detection_adapter,
             vlm_adapter=vlm_adapter,
+            recommendation_provider=recommendation_provider,
             garment_preprocessor=garment_preprocessor,
             explanation_provider=explanation_provider,
         )
@@ -451,17 +455,46 @@ class ProductionInferencePipeline:
         if context.metadata:
             response["preprocessing"] = dict(context.metadata)
 
+        recommendation_result = None
+        if self.recommendation_provider is not None:
+            try:
+                recommendation_result = self.recommendation_provider.recommend(
+                    outfit_item_ids=item_ids,
+                    outfit_embeddings=embeddings,
+                    outfit_category_ids=[int(value) for value in categories.tolist()],
+                    problematic_index=int(diagnosis["problematic_item_index"]),
+                    loo_result=diagnosis,
+                )
+            except (KeyError, TypeError, ValueError, RuntimeError) as error:
+                raise RuntimeError(f"Recommendation V2 failed: {error}") from error
+            if not hasattr(recommendation_result, "to_public_dict"):
+                raise RuntimeError(
+                    "Recommendation provider must return RecommendationResult-like object"
+                )
+            response["recommendation"] = recommendation_result.to_public_dict()
+
         if include_explanation and self.vlm_adapter is not None:
             if len(context.crop_image_refs) != len(context):
                 raise RuntimeError(
                     "VLM explanation requires one crop image reference per garment"
                 )
-            response["explanation"] = self.vlm_adapter.explain(
-                diagnosis,
-                context.garments,
-                context.crop_image_refs,
-                sample_id=context.request_id,
-            )
+            if recommendation_result is not None and hasattr(
+                self.vlm_adapter, "explain_v2"
+            ):
+                response["explanation"] = self.vlm_adapter.explain_v2(
+                    diagnosis,
+                    context.garments,
+                    context.crop_image_refs,
+                    sample_id=context.request_id,
+                    recommendation_result=recommendation_result,
+                )
+            else:
+                response["explanation"] = self.vlm_adapter.explain(
+                    diagnosis,
+                    context.garments,
+                    context.crop_image_refs,
+                    sample_id=context.request_id,
+                )
         return response
 
     def analyze_precomputed(

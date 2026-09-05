@@ -1,0 +1,105 @@
+# -*- coding: utf-8 -*-
+
+import base64
+import importlib.util
+import unittest
+from pathlib import Path
+
+
+HAS_FASTAPI = importlib.util.find_spec("fastapi") is not None
+
+
+@unittest.skipUnless(HAS_FASTAPI, "FastAPI runtime dependencies are not installed")
+class VLMV2ServiceAPITests(unittest.TestCase):
+    def test_v2_service_rejects_non_top3_candidate_image_map(self):
+        from fastapi.testclient import TestClient
+        from src.inference.vlm_http_api import create_app
+
+        class FakeRuntime:
+            config_path = Path("fake-vlm-v2-config.json")
+            loaded = False
+
+            def get_adapter(self):
+                raise AssertionError("invalid request must not load the model")
+
+        client = TestClient(create_app(FakeRuntime(), FakeRuntime()))
+        response = client.post(
+            "/v2/explain",
+            json={
+                "sample_id": "sample-v2-1",
+                "evidence": {"schema_version": "vlm-evidence-v2"},
+                "outfit_images": [{"filename": "garment.png", "base64": "aA=="}],
+                "recommendation_images": {
+                    "item-a": {"filename": "item-a.jpg", "base64": "aA=="},
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_v2_service_decodes_outfit_and_candidate_images(self):
+        from fastapi.testclient import TestClient
+        from src.inference.vlm_http_api import create_app
+
+        captured = {}
+
+        class FakeAdapter:
+            def explain(
+                self,
+                evidence,
+                outfit_image_refs,
+                recommendation_image_refs,
+                *,
+                must_exist,
+            ):
+                captured["evidence"] = evidence
+                captured["outfit_exists"] = [
+                    Path(value).is_file() for value in outfit_image_refs
+                ]
+                captured["recommendation_exists"] = {
+                    key: Path(value).is_file()
+                    for key, value in recommendation_image_refs.items()
+                }
+                captured["must_exist"] = must_exist
+                return {"user_facing": {"schema_version": "vlm-user-facing-v2"}}
+
+        class FakeRuntime:
+            config_path = Path("fake-vlm-v2-config.json")
+            loaded = False
+
+            def get_adapter(self):
+                self.loaded = True
+                return FakeAdapter()
+
+        client = TestClient(create_app(FakeRuntime(), FakeRuntime()))
+        encoded = base64.b64encode(b"fake-image-bytes").decode("ascii")
+        response = client.post(
+            "/v2/explain",
+            json={
+                "sample_id": "sample-v2-1",
+                "evidence": {"schema_version": "vlm-evidence-v2"},
+                "outfit_images": [
+                    {"filename": "garment-0.png", "base64": encoded},
+                    {"filename": "garment-1.png", "base64": encoded},
+                ],
+                "recommendation_images": {
+                    "item-a": {"filename": "item-a.jpg", "base64": encoded},
+                    "item-b": {"filename": "item-b.jpg", "base64": encoded},
+                    "item-c": {"filename": "item-c.jpg", "base64": encoded},
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["explanation"]["schema_version"],
+            "vlm-user-facing-v2",
+        )
+        self.assertEqual(captured["outfit_exists"], [True, True])
+        self.assertEqual(
+            captured["recommendation_exists"],
+            {"item-a": True, "item-b": True, "item-c": True},
+        )
+        self.assertTrue(captured["must_exist"])
+
+
+if __name__ == "__main__":
+    unittest.main()

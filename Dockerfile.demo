@@ -1,0 +1,40 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    FASHION_INFERENCE_DEVICE=cuda \
+    FASHION_DETECTION_DEVICE=cuda \
+    FASHION_VLM_PROTOCOL=v2 \
+    FASHION_VLM_SERVICE_URL=http://127.0.0.1:8001 \
+    FASHION_REQUIRE_VLM=true \
+    FASHION_VLM_TIMEOUT_SECONDS=300 \
+    FASHION_MAX_PENDING_REQUESTS=3 \
+    FASHION_CORS_ORIGINS=* \
+    FASHION_RECOMMENDATION_ARTIFACT_ROOT=/data/ML_Final \
+    FASHION_RECOMMENDATION_IMAGE_ROOT=/data/images
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install common runtime dependencies once. The two project virtualenvs share
+# this site-packages directory, while keeping incompatible Transformers majors
+# isolated from each other.
+COPY requirements-runtime.txt requirements-detection.txt requirements-vlm.txt ./
+RUN python -m pip install --upgrade pip \
+    && python -m pip install -r requirements-runtime.txt \
+    && python -m venv --system-site-packages /opt/core-venv \
+    && python -m venv --system-site-packages /opt/vlm-venv \
+    && /opt/core-venv/bin/pip install -r requirements-detection.txt \
+    && /opt/vlm-venv/bin/pip install -r requirements-vlm.txt
+
+COPY . .
+COPY docker/start-demo.sh /usr/local/bin/start-demo.sh
+RUN chmod +x /usr/local/bin/start-demo.sh
+
+EXPOSE 8000
+
+CMD ["/usr/local/bin/start-demo.sh"]

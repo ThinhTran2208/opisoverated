@@ -18,10 +18,11 @@ Mục tiêu chính:
 
 ### Current delivery scope
 
-Canonical delivery hiện dùng frozen V5 scorer, LOO diagnosis và grounded VLM
-explanation. Garment detection được phát triển song song. Candidate retrieval /
-replacement recommendation chưa triển khai và được giữ làm future work; VLM
-không được tự bịa recommendation để lấp phần còn thiếu.
+Canonical delivery hiện dùng frozen V5 scorer, LOO diagnosis, grounded VLM
+explanation và Recommendation V1 dạng Hybrid Retrieval. Recommendation là
+module downstream độc lập; VLM V1 vẫn không được tự bịa recommendation. Catalog
+được load trực tiếp từ `ML_Final` ZIP với đủ 142.480 embedding và ba image ZIP;
+ảnh được đọc theo từng entry mà không giải nén toàn bộ archive.
 
 Core scorer luôn trả về:
 
@@ -215,13 +216,13 @@ Recommendation được chia thành hai stage:
 ```text
 Problematic Item
       ↓
-Candidate Retrieval
+Top-200 problematic + Top-200 context
       ↓
-Top-200 candidates
+Union / de-duplicate / master-category filter
       ↓
 Compatibility Scorer Reranking
       ↓
-Top-5 replacements
+Top-3 replacements
 ```
 
 Candidate retrieval có mục tiêu lấy shortlist với recall cao.
@@ -229,6 +230,8 @@ Candidate retrieval có mục tiêu lấy shortlist với recall cao.
 Scorer reranking có mục tiêu chọn candidate tạo outfit compatible hơn trong context của toàn outfit.
 
 Recommendation là một nhánh riêng sau scorer; VLM không trực tiếp chọn candidate.
+Implementation và giới hạn dữ liệu hiện tại được khóa tại
+`docs/RECOMMENDATION_V1.md`.
 
 ---
 
@@ -364,14 +367,12 @@ Secondary:
 
 Primary:
 
-- **Recall@5**
+- **Hit@3**
 
 Secondary:
 
-- Recall@1;
-- Recall@3;
-- Recall@10;
-- Replacement Success Rate.
+- Hit@1;
+- MRR.
 
 ### Diagnosis
 
@@ -395,7 +396,7 @@ Mỗi module trả lời một câu hỏi khác nhau:
 | Paired ranking | Original có tốt hơn one-item-swap negative? | 2-way FITB |
 | Diagnosis | Có chỉ đúng swapped/problematic item? | LOO Top-1 |
 | Retrieval | GT có lọt candidate shortlist? | Recall@200 |
-| Reranking | GT có lọt shortlist cuối? | Recall@5 |
+| Reranking V1 | GT có lọt shortlist cuối? | Hit@3 |
 
 ---
 
@@ -483,8 +484,10 @@ Giải thích kết quả
 
 ## Tài liệu nội bộ
 
+- `docs/DEPLOY_DEMO_MVP.md` — chạy backend web-app V2 trên một GPU cho demo ngắn hạn.
 - `DATA_CONTRACT_VI.md` — source of truth cho dữ liệu, embedding, scorer I/O và versioning.
 - `PROJECT_METRICS_VI.md` — định nghĩa metrics cho scorer, diagnosis và recommendation.
+- `RECOMMENDATION_V1.md` — contract Hybrid Retrieval, frozen V5 reranking và smoke test.
 - `TEAM_WORKFLOW_VI.md` — workflow làm việc giữa leader và các assistants.
 
 ---

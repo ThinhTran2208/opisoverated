@@ -35,6 +35,22 @@ class ExplanationProvider(Protocol):
         ...
 
 
+@runtime_checkable
+class RecommendationProvider(Protocol):
+    """Produce authoritative Recommendation V2 candidates for one outfit."""
+
+    def recommend(
+        self,
+        *,
+        outfit_item_ids: Sequence[str],
+        outfit_embeddings: object,
+        outfit_category_ids: Sequence[int],
+        problematic_index: int,
+        loo_result: Mapping[str, object] | None = None,
+    ) -> object:
+        ...
+
+
 class VLMServiceError(RuntimeError):
     """Raised when a remote VLM service cannot produce a valid explanation."""
 
@@ -244,4 +260,135 @@ class RemoteVLMAdapter:
             raise VLMServiceError(f"VLM service returned an invalid response: {body!r}")
         if "explanation" not in body:
             raise VLMServiceError("VLM service response is missing explanation")
+        return body["explanation"]
+
+
+class RemoteVLMAdapterV2:
+    """Remote adapter for score-free VLM Explanation V2.
+
+    The core builds and validates the complete evidence object, then materializes
+    the three authoritative catalog images into a request-scoped temporary
+    directory. The VLM service receives only those temporary image bytes and the
+    validated evidence; it never needs the recommendation catalog filesystem.
+    """
+
+    def __init__(
+        self,
+        service_url: str,
+        *,
+        image_resolver,
+        timeout_seconds: float = 300.0,
+    ) -> None:
+        normalized = str(service_url).strip().rstrip("/")
+        if not normalized:
+            raise ValueError("service_url must be non-empty")
+        if image_resolver is None:
+            raise ValueError("image_resolver is required for VLM V2")
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        self.service_url = normalized
+        self.image_resolver = image_resolver
+        self.timeout_seconds = float(timeout_seconds)
+
+    @staticmethod
+    def _encode_path(path: Path) -> dict[str, str]:
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing VLM V2 image: {path}")
+        mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        return {
+            "filename": path.name,
+            "content_type": mime_type,
+            "base64": base64.b64encode(path.read_bytes()).decode("ascii"),
+        }
+
+    def explain_v2(
+        self,
+        loo_result: Mapping[str, object],
+        garments: Sequence[Mapping[str, object]],
+        crop_image_refs: Sequence[str | Path],
+        *,
+        sample_id: str,
+        recommendation_result: object,
+    ) -> object:
+        if len(crop_image_refs) != len(garments):
+            raise ValueError("RemoteVLMAdapterV2 requires one crop ref per garment")
+
+        from src.vlm import build_vlm_evidence_v2
+
+        item_ids: list[str] = []
+        coarse_categories: list[str] = []
+        for index, garment in enumerate(garments):
+            item_id = str(garment.get("item_id", f"garment-{index}"))
+            category = garment.get("coarse_category")
+            if not isinstance(category, str) or not category.strip():
+                raise ValueError(f"garments[{index}] is missing coarse_category")
+            item_ids.append(item_id)
+            coarse_categories.append(category.strip().upper())
+
+        evidence = build_vlm_evidence_v2(
+            loo_result,
+            recommendation_result,
+            sample_id=sample_id,
+            item_ids=item_ids,
+            coarse_categories=coarse_categories,
+        )
+        public = recommendation_result.to_public_dict()
+        candidates = public.get("items")
+        if not isinstance(candidates, list) or len(candidates) != 3:
+            raise ValueError("VLM V2 requires exactly three recommendation items")
+
+        with tempfile.TemporaryDirectory(prefix="outfit-recommendations-") as directory:
+            root = Path(directory)
+            recommendation_refs: dict[str, Path] = {}
+            for candidate_index, row in enumerate(candidates):
+                if not isinstance(row, Mapping):
+                    raise ValueError("Recommendation item must be an object")
+                item_id = str(row["item_id"])
+                # Item IDs are catalog data, not filesystem paths. Use a stable
+                # request-local filename so a malformed ID cannot escape the
+                # temporary directory.
+                destination = root / f"candidate-{candidate_index}.jpg"
+                self.image_resolver.write_selected_image(item_id, destination)
+                recommendation_refs[item_id] = destination
+
+            payload = {
+                "sample_id": str(sample_id),
+                "evidence": evidence,
+                "outfit_images": [
+                    self._encode_path(Path(value)) for value in crop_image_refs
+                ],
+                "recommendation_images": {
+                    item_id: self._encode_path(path)
+                    for item_id, path in recommendation_refs.items()
+                },
+            }
+
+            try:
+                import httpx
+            except ModuleNotFoundError as error:  # pragma: no cover
+                raise RuntimeError(
+                    "httpx is required for the remote VLM adapter; install requirements-runtime.txt"
+                ) from error
+
+            try:
+                response = httpx.post(
+                    f"{self.service_url}/v2/explain",
+                    json=payload,
+                    timeout=self.timeout_seconds,
+                )
+            except httpx.HTTPError as error:
+                raise VLMServiceError(f"VLM V2 service request failed: {error}") from error
+
+        if response.status_code >= 400:
+            raise VLMServiceError(
+                f"VLM V2 service returned HTTP {response.status_code}: {response.text[:500]}"
+            )
+        try:
+            body = response.json()
+        except ValueError as error:
+            raise VLMServiceError("VLM V2 service returned non-JSON content") from error
+        if not isinstance(body, Mapping) or body.get("status") != "ok":
+            raise VLMServiceError(f"VLM V2 service returned an invalid response: {body!r}")
+        if "explanation" not in body:
+            raise VLMServiceError("VLM V2 service response is missing explanation")
         return body["explanation"]
