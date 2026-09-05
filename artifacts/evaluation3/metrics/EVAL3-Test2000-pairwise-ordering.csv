@@ -1,0 +1,10 @@
+subset,diagnostic,higher_class,lower_class,probability,wins,ties,losses,cross_class_pairs
+EVAL3-Test2000-No-Full-Image-Overlap-Candidate,P_Good_gt_Bad,Good,Bad,0.5111351685740798,3305,0,3161,6466
+EVAL3-Test2000-No-Full-Image-Overlap-Candidate,P_Good_gt_Normal,Good,Normal,0.5400665926748057,14598,0,12432,27030
+EVAL3-Test2000-No-Full-Image-Overlap-Candidate,P_Normal_gt_Bad,Normal,Bad,0.4752169720347155,7392,0,8163,15555
+EVAL3-Test2000-No-TrainValid-Image-Overlap-Candidate,P_Good_gt_Bad,Good,Bad,0.5648926237161531,7865,0,6058,13923
+EVAL3-Test2000-No-TrainValid-Image-Overlap-Candidate,P_Good_gt_Normal,Good,Normal,0.5181305398871877,28935,0,26910,55845
+EVAL3-Test2000-No-TrainValid-Image-Overlap-Candidate,P_Normal_gt_Bad,Normal,Bad,0.5442420593105525,18077,0,15138,33215
+EVAL3-Test2000-Full,P_Good_gt_Bad,Good,Bad,0.5269700079826662,73936,0,66368,140304
+EVAL3-Test2000-Full,P_Good_gt_Normal,Good,Normal,0.492017426503379,286856,0,296164,583020
+EVAL3-Test2000-Full,P_Normal_gt_Bad,Normal,Bad,0.5312705998681608,193425,0,170655,364080
