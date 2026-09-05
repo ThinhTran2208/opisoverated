@@ -5,6 +5,7 @@ import unittest
 
 from src.vlm.prompt_v2 import (
     PROMPT_CONTEXT_SCHEMA_VERSION_V2,
+    SYSTEM_PROMPT_V2,
     TWO_ITEM_EXTRAPOLATION_LIMITATION,
     VISUAL_ANALYSIS_SCHEMA_VERSION_V2,
     append_repair_request_v2,
@@ -167,6 +168,7 @@ class VlmPromptV2Tests(unittest.TestCase):
         self.assertIn(PROMPT_CONTEXT_SCHEMA_VERSION_V2, text)
         self.assertIn("Raw scorer, LOO, and recommendation numerical values are deliberately omitted", text)
         self.assertIn("no free-text fields", text)
+        self.assertIn("language about scores", SYSTEM_PROMPT_V2)
 
         self.assertEqual(
             [row["image"] for row in image_rows[-3:]],

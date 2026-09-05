@@ -46,7 +46,7 @@
       </section>
 
       <section id="results" class="panel results" aria-live="polite">
-        <div class="result-grid"><div><div class="label">Món cần thay</div><div class="callout"><h2 id="problemCategory">—</h2><p id="problemHeadline">—</p><p id="problemReason">—</p></div></div><div><div class="label">Top 3 lựa chọn</div><div id="cards" class="cards"></div></div></div>
+        <div class="result-grid"><div><div class="label">Món nên thay</div><div class="callout"><h2 id="problemCategory">—</h2></div></div><div><div class="label">Top 3 lựa chọn</div><div id="cards" class="cards"></div></div></div>
         <div class="callout" style="margin-top:22px"><div class="label">Nhận xét</div><p id="explanation">—</p></div>
       </section>
       <footer>Demo backend chạy trên Vast.ai · Không lưu ảnh upload trong frontend.</footer>
@@ -66,17 +66,18 @@
         if (!selectedFile) return; analyze.disabled = true; setStatus('Đang phân tích… lần đầu có thể mất vài phút.');
         const body = new FormData(); body.append('image', selectedFile);
         try {
-          const response = await fetch('/v2/analyze-outfit', { method: 'POST', body });
-          const payload = await response.json();
-          if (!response.ok || payload.status === 'error') throw new Error(payload.error?.message || 'Backend không trả về kết quả.');
+          const response = await fetch('/v2/analyze-outfit', { method: 'POST', headers: { Accept: 'application/json' }, body });
+          const raw = await response.text();
+          let payload;
+          try { payload = raw ? JSON.parse(raw) : {}; } catch { throw new Error(`Backend trả về lỗi HTTP ${response.status}, không phải JSON. Kiểm tra log server.`); }
+          const backendError = typeof payload.error === 'string' ? payload.error : payload.error?.message;
+          if (!response.ok || payload.status === 'error') throw new Error(backendError || `Backend trả về HTTP ${response.status}.`);
           render(payload); setStatus('Phân tích hoàn tất.');
         } catch (error) { setStatus(error.message, true); } finally { analyze.disabled = false; }
       });
       function render(payload) {
         const problem = payload.explanation?.problematic_item || {};
         document.querySelector('#problemCategory').textContent = text(problem.category);
-        document.querySelector('#problemHeadline').textContent = text(problem.headline);
-        document.querySelector('#problemReason').textContent = text(problem.reason);
         document.querySelector('#explanation').textContent = text(payload.explanation?.text);
         const items = payload.recommendation?.items || payload.explanation?.recommendations || [];
         const cards = document.querySelector('#cards'); cards.replaceChildren();

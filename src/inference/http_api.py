@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import os
 import asyncio
+import logging
 from pathlib import Path
 
 try:
@@ -30,6 +31,9 @@ from .adapters import (
     VLMServiceError,
 )
 from .pipeline import InferenceInputError, ProductionInferencePipeline
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -310,6 +314,20 @@ def create_app(pipeline: ProductionInferencePipeline) -> FastAPI:
                 "error": error.to_dict(),
                 "versions": pipeline.versions,
             }
+        except Exception as error:  # defensive: keep client errors JSON-shaped.
+            LOGGER.exception("Unhandled inference request failure")
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "status": "error",
+                    "error": {
+                        "code": "internal_server_error",
+                        "message": "Inference request failed; check the core service log",
+                        "details": {"exception": type(error).__name__},
+                    },
+                    "versions": pipeline.versions,
+                },
+            )
         finally:
             pending_requests -= 1
 

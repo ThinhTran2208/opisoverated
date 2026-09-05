@@ -123,8 +123,8 @@ def _diagnosis_support_reason(
     if not phrases:
         return None
     if len(phrases) == 1:
-        return "Điểm chưa phù hợp dễ thấy nhất là " + phrases[0] + "."
-    return "Các điểm chưa phù hợp dễ thấy là " + "; ".join(phrases) + "."
+        return "Điều dễ nhận thấy nhất là " + phrases[0] + "."
+    return "Các khác biệt dễ nhận thấy là " + "; ".join(phrases) + "."
 
 
 def _recommendation_support_reason(visual: Mapping[str, object]) -> str | None:
@@ -174,25 +174,6 @@ def render_user_facing_vi_v2(
     problem_coarse = str(diagnosis["problematic_category"])
     problem_category = CATEGORY_LABELS_VI[problem_coarse]
     current_item_inline = _CURRENT_ITEM_LABEL_VI[problem_coarse]
-    current_item_label = _sentence_case(current_item_inline)
-
-    category_by_index = {
-        int(row["item_index"]): str(row["coarse_category"])
-        for row in normalized_evidence["items"]
-    }
-
-    problematic_headline = (
-        f"Trong outfit này, {current_item_inline} là món được ưu tiên thay."
-    )
-    diagnosis_reason = _diagnosis_support_reason(
-        normalized_analysis["diagnosis"],
-        problem_index=problem_index,
-        category_by_index=category_by_index,
-    )
-    problematic_reason = diagnosis_reason or (
-        "Đây là món có ảnh hưởng lớn nhất đến mức độ phù hợp của outfit trong đánh giá hiện tại."
-    )
-
     authoritative_candidates = normalized_evidence["recommendation"]["items"]
     all_improve = all(
         float(row["improvement_logit"]) > 0 for row in authoritative_candidates
@@ -200,7 +181,7 @@ def render_user_facing_vi_v2(
     replacement_noun = _RECOMMENDATION_NOUN_VI[problem_coarse]
     if all_improve:
         summary = (
-            f"Ba {replacement_noun} bên dưới đều là những phương án được đánh giá phù hợp hơn "
+            f"Ba {replacement_noun} bên dưới đều là những phương án phù hợp hơn "
             f"với outfit khi thay cho {current_item_inline}."
         )
     else:
@@ -228,7 +209,7 @@ def render_user_facing_vi_v2(
             reason = f"{lead}, với {visual_reason}."
         elif improves_original:
             reason = (
-                f"{lead} và cũng được đánh giá phù hợp hơn với outfit so với "
+                f"{lead} và cũng phù hợp hơn với outfit so với "
                 f"{current_item_inline}."
             )
         else:
@@ -254,8 +235,6 @@ def render_user_facing_vi_v2(
 
     final_text = " ".join(
         [
-            problematic_headline,
-            problematic_reason,
             summary,
             *recommendation_sentences,
             closing,
@@ -269,8 +248,6 @@ def render_user_facing_vi_v2(
             "item_index": problem_index,
             "item_id": problem_id,
             "category": problem_category,
-            "headline": problematic_headline,
-            "reason": problematic_reason,
         },
         "summary": summary,
         "recommendations": recommendations,

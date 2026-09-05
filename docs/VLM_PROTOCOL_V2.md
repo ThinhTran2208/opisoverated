@@ -595,7 +595,7 @@ The handoff is useful when another application layer needs structured VLM metada
 It contains:
 
 - final `text`;
-- authoritative problematic item identity/category;
+- authoritative item identity/category that should be replaced;
 - exactly three authoritative candidates in frozen rank order;
 - display names derived from coarse category;
 - deterministic recommendation reasons/fallback text;

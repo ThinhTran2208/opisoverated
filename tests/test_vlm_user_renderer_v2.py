@@ -156,9 +156,11 @@ class VlmUserRendererV2Tests(unittest.TestCase):
     def test_renders_decisive_plain_vietnamese_for_end_users(self):
         rendered = render_user_facing_vi_v2(analysis_fixture(), evidence_fixture())
         self.assertEqual(rendered["schema_version"], USER_FACING_SCHEMA_VERSION_V2)
-        self.assertIn("chiếc túi hiện tại là món được ưu tiên thay", rendered["problematic_item"]["headline"])
-        self.assertTrue(rendered["problematic_item"]["reason"])
-        self.assertIn("ảnh hưởng lớn nhất", rendered["problematic_item"]["reason"])
+        self.assertEqual(
+            rendered["problematic_item"],
+            {"item_index": 3, "item_id": "bag-current", "category": "túi"},
+        )
+        self.assertNotIn("chiếc túi hiện tại là món được ưu tiên thay", rendered["text"])
         self.assertIn("Ba mẫu túi", rendered["summary"])
         self.assertIn("phù hợp hơn", rendered["summary"])
         self.assertEqual(len(rendered["recommendations"]), 3)
@@ -194,8 +196,6 @@ class VlmUserRendererV2Tests(unittest.TestCase):
         prose = " ".join(
             [
                 rendered["text"],
-                rendered["problematic_item"]["headline"],
-                rendered["problematic_item"]["reason"],
                 rendered["summary"],
                 rendered["caution"],
                 *[row["headline"] for row in rendered["recommendations"]],
@@ -203,6 +203,18 @@ class VlmUserRendererV2Tests(unittest.TestCase):
             ]
         ).lower()
         for forbidden in ("loo", "qwen", "logit", "validator", "probability"):
+            self.assertNotIn(forbidden, prose)
+
+    def test_user_prose_does_not_sound_like_a_score_or_model_assessment(self):
+        rendered = render_user_facing_vi_v2(analysis_fixture(), evidence_fixture())
+        prose = " ".join(
+            [
+                rendered["text"],
+                rendered["summary"],
+                *[row["reason"] for row in rendered["recommendations"]],
+            ]
+        ).lower()
+        for forbidden in ("đánh giá", "điểm", "score", "confidence", "phần trăm"):
             self.assertNotIn(forbidden, prose)
 
     def test_user_payload_does_not_expose_raw_scores(self):

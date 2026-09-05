@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import logging
 import os
 import tempfile
 import threading
@@ -25,6 +26,9 @@ except ModuleNotFoundError as error:  # pragma: no cover - runtime dependency.
     ) from error
 
 from .adapters import VLMAdapter
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -196,6 +200,19 @@ def create_app(
                 status_code=503,
                 content={"status": "error", "error": str(error)},
             )
+        except Exception as error:  # defensive: never return plain-text 500s.
+            LOGGER.exception("Unhandled VLM request failure")
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "status": "error",
+                    "error": {
+                        "code": "internal_server_error",
+                        "message": "VLM request failed; check the VLM service log",
+                        "details": {"exception": type(error).__name__},
+                    },
+                },
+            )
 
         return {"status": "ok", "explanation": explanation}
 
@@ -279,6 +296,19 @@ def create_app(
             return JSONResponse(
                 status_code=503,
                 content={"status": "error", "error": str(error)},
+            )
+        except Exception as error:  # defensive: never return plain-text 500s.
+            LOGGER.exception("Unhandled VLM V2 request failure")
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "status": "error",
+                    "error": {
+                        "code": "internal_server_error",
+                        "message": "VLM V2 request failed; check the VLM service log",
+                        "details": {"exception": type(error).__name__},
+                    },
+                },
             )
 
         if not isinstance(run, Mapping) or "user_facing" not in run:

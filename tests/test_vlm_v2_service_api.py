@@ -100,6 +100,39 @@ class VLMV2ServiceAPITests(unittest.TestCase):
         )
         self.assertTrue(captured["must_exist"])
 
+    def test_v2_service_keeps_unexpected_failures_json_shaped(self):
+        from fastapi.testclient import TestClient
+        from src.inference.vlm_http_api import create_app
+
+        class FakeAdapter:
+            def explain(self, *args, **kwargs):
+                raise KeyError("simulated failure")
+
+        class FakeRuntime:
+            config_path = Path("fake-vlm-v2-config.json")
+            loaded = False
+
+            def get_adapter(self):
+                return FakeAdapter()
+
+        client = TestClient(create_app(FakeRuntime(), FakeRuntime()))
+        encoded = base64.b64encode(b"fake-image-bytes").decode("ascii")
+        response = client.post(
+            "/v2/explain",
+            json={
+                "sample_id": "sample-v2-1",
+                "evidence": {"schema_version": "vlm-evidence-v2"},
+                "outfit_images": [{"filename": "garment.png", "base64": encoded}],
+                "recommendation_images": {
+                    "item-a": {"filename": "item-a.jpg", "base64": encoded},
+                    "item-b": {"filename": "item-b.jpg", "base64": encoded},
+                    "item-c": {"filename": "item-c.jpg", "base64": encoded},
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["error"]["code"], "internal_server_error")
+
 
 if __name__ == "__main__":
     unittest.main()

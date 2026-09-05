@@ -128,6 +128,11 @@ Hard rules:
 16. Confidence describes only how clearly the claimed visual relation is visible
     in the supplied images. It is not confidence in the scorer, LOO decision, or
     recommendation rank.
+17. This is an internal JSON evidence task. Never emit user-facing prose or
+    language about scores, points, logits, percentages, probabilities,
+    confidence in the system, or numerical quality ratings. Downstream copy
+    must describe visible outfit relations only; recommendation order is already
+    fixed and must not be justified with a number.
 """
 
 

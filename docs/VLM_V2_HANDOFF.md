@@ -122,7 +122,7 @@ user_result = render_user_facing_vi_v2(
 The result schema is `vlm-user-facing-v2` and contains:
 
 - one final `text` string suitable for direct display;
-- the authoritative problematic item identity/category;
+- the authoritative item identity/category that should be replaced;
 - exactly three authoritative replacement candidates in frozen rank order;
 - safe display names derived from coarse category, e.g. `Mẫu túi 1`, `Mẫu túi 2`, `Mẫu túi 3`;
 - a positive visual reason only when Qwen provides grounded support;
@@ -136,18 +136,16 @@ not surfaced as a counter-argument to the user.
 Example for the bag case used during manual review:
 
 ```text
-Trong outfit này, chiếc túi hiện tại là món được ưu tiên thay.
-Đây là món có ảnh hưởng lớn nhất đến mức độ phù hợp của outfit trong đánh giá hiện tại.
-Ba mẫu túi bên dưới đều là những phương án được đánh giá phù hợp hơn với outfit khi thay cho chiếc túi hiện tại.
+Ba mẫu túi bên dưới đều là những phương án phù hợp hơn với outfit khi thay cho chiếc túi hiện tại.
 Mẫu túi 1 là lựa chọn ưu tiên nhất, với màu sắc phối hợp tốt với các món còn lại.
-Mẫu túi 2 là lựa chọn thứ hai và cũng được đánh giá phù hợp hơn với outfit so với chiếc túi hiện tại.
+Mẫu túi 2 là lựa chọn thứ hai và cũng phù hợp hơn với outfit so với chiếc túi hiện tại.
 Mẫu túi 3 là lựa chọn thứ ba, với phom dáng giúp tổng thể outfit cân đối hơn.
 Bạn có thể tham khảo ba mẫu trên để thay cho chiếc túi hiện tại và chọn phương án phù hợp nhất với sở thích của mình.
 ```
 
-If a candidate does not improve on the current outfit score, the renderer does
-not falsely claim it is better; it only says that it is one of the prioritized
-replacement candidates.
+If a candidate does not improve according to the internal selection logic, the
+renderer does not make a numeric claim; it only says that it is one of the
+prioritized replacement candidates.
 
 ## Frontend image binding
 
