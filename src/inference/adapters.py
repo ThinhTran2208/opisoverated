@@ -55,6 +55,11 @@ class VLMServiceError(RuntimeError):
     """Raised when a remote VLM service cannot produce a valid explanation."""
 
 
+_PROBLEMATIC_ITEM_REASON_FALLBACK_V2 = (
+    "Món này được ưu tiên thay vì chưa tạo được sự liền mạch với tổng thể outfit."
+)
+
+
 class DetectionAdapter:
     """RF-DETR + FashionCLIP adapter producing the canonical inference context."""
 
@@ -405,6 +410,11 @@ class RemoteVLMAdapterV2:
             explanation = body["explanation"]
             if original_image_ref is not None and isinstance(explanation, Mapping):
                 problem_index = int(loo_result["problematic_item_index"])
+                # Replace the primary V2 prose even when the optional reason
+                # pass is unavailable or refuses to invent a visual weakness.
+                # Otherwise an older positive explanation can leak back into
+                # the user-facing problematic-item card.
+                reason = _PROBLEMATIC_ITEM_REASON_FALLBACK_V2
                 reason_payload = {
                     "sample_id": str(sample_id),
                     "target_item": {
@@ -432,16 +442,21 @@ class RemoteVLMAdapterV2:
                             else ""
                         )
                         if isinstance(reason, str) and reason.strip():
-                            enriched = dict(explanation)
-                            problematic_item = enriched.get("problematic_item")
-                            if isinstance(problematic_item, Mapping):
-                                enriched_problematic_item = dict(problematic_item)
-                                enriched_problematic_item["reason"] = reason.strip()
-                                enriched["problematic_item"] = enriched_problematic_item
-                                explanation = enriched
+                            reason = reason.strip()
+                        else:
+                            reason = _PROBLEMATIC_ITEM_REASON_FALLBACK_V2
                 except (httpx.HTTPError, ValueError, TypeError):
-                    # The dedicated prose pass is best-effort. The validated V2
-                    # explanation remains usable if this optional call fails.
-                    pass
+                    # Keep the user-facing card critical even if the optional
+                    # prose request fails; the authoritative diagnosis remains
+                    # supplied by the frozen scorer/LOO pipeline.
+                    reason = _PROBLEMATIC_ITEM_REASON_FALLBACK_V2
+
+                enriched = dict(explanation)
+                problematic_item = enriched.get("problematic_item")
+                if isinstance(problematic_item, Mapping):
+                    enriched_problematic_item = dict(problematic_item)
+                    enriched_problematic_item["reason"] = reason
+                    enriched["problematic_item"] = enriched_problematic_item
+                    explanation = enriched
 
             return explanation

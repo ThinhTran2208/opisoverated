@@ -3,7 +3,8 @@
 The internal VLM analysis may record support, ambiguity, or disagreement for
 quality control. End users should not see that internal debate. The authoritative
 problematic item and Top-3 recommendation ranks come from the frozen upstream
-pipeline; Qwen contributes only optional image-grounded positive visual reasons.
+pipeline; Qwen contributes only an optional image-grounded critique of the item
+selected for replacement.
 """
 
 from __future__ import annotations
@@ -185,7 +186,7 @@ def render_user_facing_vi_v2(
     )
     model_reason = str(normalized_analysis["diagnosis"].get("user_reason", "")).strip()
     problematic_reason = model_reason or diagnosis_reason or (
-        "Món này được ưu tiên thay để tổng thể outfit cân đối hơn."
+        "Món này được ưu tiên thay vì chưa tạo được sự liền mạch với tổng thể outfit."
     )
     authoritative_candidates = normalized_evidence["recommendation"]["items"]
     all_improve = all(

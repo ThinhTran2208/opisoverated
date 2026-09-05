@@ -103,6 +103,38 @@ def _sanitize_generated_reason(value: object) -> str:
         reason = reason[1:-1].strip()
     if not reason or "{" in reason or "}" in reason:
         return ""
+    lowered = reason.casefold()
+    # The separate pass exists to explain the *weakness* of the item selected
+    # for replacement. Qwen can otherwise produce a fluent but inverted reason
+    # that praises the current item (for example, "tạo ... hài hòa hơn").
+    positive_only_phrases = (
+        "phối hợp tốt",
+        "hài hòa hơn",
+        "cân đối hơn",
+        "đồng nhất hơn",
+        "ăn nhập tốt",
+    )
+    negative_markers = (
+        "không ",
+        "chưa ",
+        "thiếu ",
+        "lệch ",
+        "quá ",
+        "kém ",
+        "nặng ",
+        "dìm ",
+        "lạc ",
+        "chọi ",
+        "lấn át",
+        "mất ",
+    )
+    has_negative_marker = any(marker in lowered for marker in negative_markers)
+    if not has_negative_marker:
+        return ""
+    if any(phrase in lowered for phrase in positive_only_phrases) and not any(
+        marker in lowered for marker in ("không ", "chưa ", "quá ", "kém ", "thiếu ")
+    ):
+        return ""
     try:
         return _validate_user_reason(reason, overall_visual_support="supports_loo")
     except ValueError:

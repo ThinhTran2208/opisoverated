@@ -11,6 +11,7 @@ from src.vlm.pipeline_v2 import (
     HANDOFF_SCHEMA_VERSION_V2,
     RUN_SCHEMA_VERSION_V2,
     VLMExplanationPipelineV2,
+    _sanitize_generated_reason,
     build_handoff_result_v2,
     render_explanation_vi_v2,
 )
@@ -188,6 +189,18 @@ class VlmPipelineV2Tests(unittest.TestCase):
             )
         self.assertIn("Chiếc áo khoác tối màu", reason)
         self.assertEqual(backend.calls, 1)
+
+    def test_dedicated_reason_rejects_fluent_positive_inversion(self):
+        reason = _sanitize_generated_reason(
+            "Áo khoác đen tạo nên sự tương phản về màu sắc, khiến tổng thể hài hòa hơn."
+        )
+        self.assertEqual(reason, "")
+
+    def test_dedicated_reason_requires_a_visible_criticism(self):
+        reason = _sanitize_generated_reason(
+            "Áo khoác đen phối hợp tốt với váy xám và giày cao gót."
+        )
+        self.assertEqual(reason, "")
 
     def test_pipeline_fails_after_repair_budget_is_exhausted(self):
         evidence = evidence_fixture()

@@ -162,7 +162,7 @@ class VlmUserRendererV2Tests(unittest.TestCase):
                 "item_index": 3,
                 "item_id": "bag-current",
                 "category": "túi",
-                "reason": "Món này được ưu tiên thay để tổng thể outfit cân đối hơn.",
+                "reason": "Món này được ưu tiên thay vì chưa tạo được sự liền mạch với tổng thể outfit.",
             },
         )
         self.assertNotIn("chiếc túi hiện tại là món được ưu tiên thay", rendered["text"])
