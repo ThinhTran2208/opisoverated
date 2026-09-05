@@ -1,0 +1,320 @@
+{
+  "bootstrap": {
+    "ci_level": 0.95,
+    "ci_method": "percentile",
+    "resamples": 10000,
+    "seed": 42,
+    "unit": "outfit"
+  },
+  "classwise_logit_summary": [
+    {
+      "IQR": 1.9525277018547058,
+      "N": 61,
+      "Q1": -1.616529107093811,
+      "Q3": 0.3359985947608948,
+      "human_class": "Bad",
+      "mean_logit": -0.5989043644217195,
+      "median_logit": -0.5849261283874512,
+      "std_logit": 1.4848233644509474,
+      "subset": "EVAL3-Test2000-No-Full-Image-Overlap-Candidate"
+    },
+    {
+      "IQR": 1.5424335300922394,
+      "N": 255,
+      "Q1": -1.4300609827041626,
+      "Q3": 0.11237254738807675,
+      "human_class": "Normal",
+      "mean_logit": -0.6740337439611847,
+      "median_logit": -0.5174615383148193,
+      "std_logit": 1.1192846769135727,
+      "subset": "EVAL3-Test2000-No-Full-Image-Overlap-Candidate"
+    },
+    {
+      "IQR": 1.2132630795240402,
+      "N": 106,
+      "Q1": -1.02624973654747,
+      "Q3": 0.18701334297657007,
+      "human_class": "Good",
+      "mean_logit": -0.4814136417688064,
+      "median_logit": -0.5100093483924866,
+      "std_logit": 1.0105223897638744,
+      "subset": "EVAL3-Test2000-No-Full-Image-Overlap-Candidate"
+    },
+    {
+      "IQR": 1.714718982577324,
+      "N": 91,
+      "Q1": -1.712149977684021,
+      "Q3": 0.0025690048933029036,
+      "human_class": "Bad",
+      "mean_logit": -0.8306567611602637,
+      "median_logit": -0.8309403657913208,
+      "std_logit": 1.3624145241398866,
+      "subset": "EVAL3-Test2000-No-TrainValid-Image-Overlap-Candidate"
+    },
+    {
+      "IQR": 1.4567276239395142,
+      "N": 365,
+      "Q1": -1.3796634674072266,
+      "Q3": 0.0770641565322876,
+      "human_class": "Normal",
+      "mean_logit": -0.6592929981750985,
+      "median_logit": -0.5174615383148193,
+      "std_logit": 1.1019939449651335,
+      "subset": "EVAL3-Test2000-No-TrainValid-Image-Overlap-Candidate"
+    },
+    {
+      "IQR": 1.2657892256975174,
+      "N": 153,
+      "Q1": -1.1963045597076416,
+      "Q3": 0.0694846659898758,
+      "human_class": "Good",
+      "mean_logit": -0.563189243276914,
+      "median_logit": -0.5474678874015808,
+      "std_logit": 1.0364214893974792,
+      "subset": "EVAL3-Test2000-No-TrainValid-Image-Overlap-Candidate"
+    },
+    {
+      "IQR": 1.7646198235452175,
+      "N": 296,
+      "Q1": -1.756568968296051,
+      "Q3": 0.0080508552491664,
+      "human_class": "Bad",
+      "mean_logit": -0.7926091482812488,
+      "median_logit": -0.8138651251792908,
+      "std_logit": 1.2921977029902239,
+      "subset": "EVAL3-Test2000-Full"
+    },
+    {
+      "IQR": 1.6118083968758583,
+      "N": 1230,
+      "Q1": -1.5021223723888397,
+      "Q3": 0.10968602448701856,
+      "human_class": "Normal",
+      "mean_logit": -0.7059511280520175,
+      "median_logit": -0.5914299488067627,
+      "std_logit": 1.1765472188986394,
+      "subset": "EVAL3-Test2000-Full"
+    },
+    {
+      "IQR": 1.551264178007841,
+      "N": 474,
+      "Q1": -1.522441029548645,
+      "Q3": 0.028823148459196053,
+      "human_class": "Good",
+      "mean_logit": -0.7157989997055209,
+      "median_logit": -0.6199701726436615,
+      "std_logit": 1.1130381076464584,
+      "subset": "EVAL3-Test2000-Full"
+    }
+  ],
+  "evaluation_dataset": "EVAL3-Test2000-Full",
+  "human_labels": {
+    "human_ordinal_derivation": "human_ordinal_quality = 4 - Cmt",
+    "metric_ordinal_mapping": {
+      "Bad": 1,
+      "Good": 3,
+      "Normal": 2
+    },
+    "original_cmt_mapping": {
+      "Bad": 3,
+      "Good": 1,
+      "Normal": 2
+    }
+  },
+  "inputs": {
+    "evaluation_manifest": {
+      "path": "/content/drive/.shortcut-targets-by-id/1_IKTmCrpVBqT9QmGH0hBbW67NHTHRX1g/EVALUATION3/eval3_test2000_scorer_full_v1/EVAL3-Test2000-evaluation-manifest-2000-clean.csv",
+      "sha256": "1a45f6dc77f11eb57cb9d4e0ff2f10a26686f0f6d131bbc134dda40de9e7a76d"
+    },
+    "human_labels": {
+      "path": "/content/drive/.shortcut-targets-by-id/1_IKTmCrpVBqT9QmGH0hBbW67NHTHRX1g/EVALUATION3/eval3_test2000_scorer_full_v1/EVAL3-Test2000-Full-human-labels.csv",
+      "sha256": "69baccc78d2af51a53712987c14865752fb3953de2b1fc89d1ec2524b64f0154"
+    },
+    "predictions": {
+      "path": "/content/drive/.shortcut-targets-by-id/1_IKTmCrpVBqT9QmGH0hBbW67NHTHRX1g/EVALUATION3/eval3_test2000_scorer_full_v1/EVAL3-Test2000-Full-predictions.csv",
+      "sha256": "d3fcdd7c37fb2145a996d0bcf44b94be07b6a456ed482983dfb9988c44af973b"
+    },
+    "protocol_artifact": {
+      "path": "/content/drive/.shortcut-targets-by-id/1_IKTmCrpVBqT9QmGH0hBbW67NHTHRX1g/EVALUATION3/eval3_test2000_scorer_full_v1/EVAL3-Test2000-protocol-v2-final.json",
+      "sha256": "74ab73bd935b628a1923372d2bd27cd82aebcce4c97f52b594e756191142470f"
+    },
+    "run_manifest": {
+      "path": "/content/drive/.shortcut-targets-by-id/1_IKTmCrpVBqT9QmGH0hBbW67NHTHRX1g/EVALUATION3/eval3_test2000_scorer_full_v1/EVAL3-Test2000-Full-run-manifest.json",
+      "sha256": "fb244ffa93b21fdf8709a45a3fb571228150d9ada6ff13dccbfb22f8aa23da07"
+    }
+  },
+  "pairwise_ordering": [
+    {
+      "cross_class_pairs": 6466,
+      "diagnostic": "P_Good_gt_Bad",
+      "higher_class": "Good",
+      "losses": 3161,
+      "lower_class": "Bad",
+      "probability": 0.5111351685740798,
+      "subset": "EVAL3-Test2000-No-Full-Image-Overlap-Candidate",
+      "ties": 0,
+      "wins": 3305
+    },
+    {
+      "cross_class_pairs": 27030,
+      "diagnostic": "P_Good_gt_Normal",
+      "higher_class": "Good",
+      "losses": 12432,
+      "lower_class": "Normal",
+      "probability": 0.5400665926748057,
+      "subset": "EVAL3-Test2000-No-Full-Image-Overlap-Candidate",
+      "ties": 0,
+      "wins": 14598
+    },
+    {
+      "cross_class_pairs": 15555,
+      "diagnostic": "P_Normal_gt_Bad",
+      "higher_class": "Normal",
+      "losses": 8163,
+      "lower_class": "Bad",
+      "probability": 0.4752169720347155,
+      "subset": "EVAL3-Test2000-No-Full-Image-Overlap-Candidate",
+      "ties": 0,
+      "wins": 7392
+    },
+    {
+      "cross_class_pairs": 13923,
+      "diagnostic": "P_Good_gt_Bad",
+      "higher_class": "Good",
+      "losses": 6058,
+      "lower_class": "Bad",
+      "probability": 0.5648926237161531,
+      "subset": "EVAL3-Test2000-No-TrainValid-Image-Overlap-Candidate",
+      "ties": 0,
+      "wins": 7865
+    },
+    {
+      "cross_class_pairs": 55845,
+      "diagnostic": "P_Good_gt_Normal",
+      "higher_class": "Good",
+      "losses": 26910,
+      "lower_class": "Normal",
+      "probability": 0.5181305398871877,
+      "subset": "EVAL3-Test2000-No-TrainValid-Image-Overlap-Candidate",
+      "ties": 0,
+      "wins": 28935
+    },
+    {
+      "cross_class_pairs": 33215,
+      "diagnostic": "P_Normal_gt_Bad",
+      "higher_class": "Normal",
+      "losses": 15138,
+      "lower_class": "Bad",
+      "probability": 0.5442420593105525,
+      "subset": "EVAL3-Test2000-No-TrainValid-Image-Overlap-Candidate",
+      "ties": 0,
+      "wins": 18077
+    },
+    {
+      "cross_class_pairs": 140304,
+      "diagnostic": "P_Good_gt_Bad",
+      "higher_class": "Good",
+      "losses": 66368,
+      "lower_class": "Bad",
+      "probability": 0.5269700079826662,
+      "subset": "EVAL3-Test2000-Full",
+      "ties": 0,
+      "wins": 73936
+    },
+    {
+      "cross_class_pairs": 583020,
+      "diagnostic": "P_Good_gt_Normal",
+      "higher_class": "Good",
+      "losses": 296164,
+      "lower_class": "Normal",
+      "probability": 0.492017426503379,
+      "subset": "EVAL3-Test2000-Full",
+      "ties": 0,
+      "wins": 286856
+    },
+    {
+      "cross_class_pairs": 364080,
+      "diagnostic": "P_Normal_gt_Bad",
+      "higher_class": "Normal",
+      "losses": 170655,
+      "lower_class": "Bad",
+      "probability": 0.5312705998681608,
+      "subset": "EVAL3-Test2000-Full",
+      "ties": 0,
+      "wins": 193425
+    }
+  ],
+  "primary_metric": "Kendall tau-b",
+  "protocol_status": "FROZEN",
+  "protocol_version": "EVALUATION3_EXTERNAL_EVALUATION_V2",
+  "scorer": {
+    "checkpoint_best_valid_roc_auc": 0.6905082489625538,
+    "checkpoint_epoch": 52,
+    "checkpoint_sha256": "7b3d0b6e0d44e3de517565f5725ded198bbc762b02a4dece26a58ee145cfed9c",
+    "evaluation_inference_code_commit": "d99fda52fc0b7c0f78590b953ce63352fe2c2954",
+    "higher_logit_means": "more compatible",
+    "output": "compatibility_logit",
+    "scorer_training_code_commit": "7cbbb19fd89352b7ef54038e57b4d8208b7ee1f6",
+    "scorer_version": "type_aware_pairwise_v1"
+  },
+  "secondary_metric": "Spearman rho",
+  "subset_results": [
+    {
+      "N_Bad": 61,
+      "N_Good": 106,
+      "N_Normal": 255,
+      "N_total": 422,
+      "bootstrap_ci_level": 0.95,
+      "bootstrap_ci_method": "percentile",
+      "bootstrap_resamples": 10000,
+      "bootstrap_seed": 42,
+      "bootstrap_unit": "outfit",
+      "bootstrap_valid_resamples": 10000,
+      "kendall_ci_high": 0.09822238949610498,
+      "kendall_ci_low": -0.05182275522987565,
+      "kendall_tau_b": 0.023314838495426763,
+      "spearman_ci_high": 0.12379571238155178,
+      "spearman_ci_low": -0.06660990138862917,
+      "spearman_rho": 0.029103370509810288,
+      "subset": "EVAL3-Test2000-No-Full-Image-Overlap-Candidate"
+    },
+    {
+      "N_Bad": 91,
+      "N_Good": 153,
+      "N_Normal": 365,
+      "N_total": 609,
+      "bootstrap_ci_level": 0.95,
+      "bootstrap_ci_method": "percentile",
+      "bootstrap_resamples": 10000,
+      "bootstrap_seed": 42,
+      "bootstrap_unit": "outfit",
+      "bootstrap_valid_resamples": 10000,
+      "kendall_ci_high": 0.11212392703867738,
+      "kendall_ci_low": -0.014089036526581925,
+      "kendall_tau_b": 0.04903708052771328,
+      "spearman_ci_high": 0.14296331273581322,
+      "spearman_ci_low": -0.01733997324574551,
+      "spearman_rho": 0.06298721475116976,
+      "subset": "EVAL3-Test2000-No-TrainValid-Image-Overlap-Candidate"
+    },
+    {
+      "N_Bad": 296,
+      "N_Good": 474,
+      "N_Normal": 1230,
+      "N_total": 2000,
+      "bootstrap_ci_level": 0.95,
+      "bootstrap_ci_method": "percentile",
+      "bootstrap_resamples": 10000,
+      "bootstrap_seed": 42,
+      "bootstrap_unit": "outfit",
+      "bootstrap_valid_resamples": 10000,
+      "kendall_ci_high": 0.0494448246646776,
+      "kendall_ci_low": -0.020781317902633392,
+      "kendall_tau_b": 0.01426387132908152,
+      "spearman_ci_high": 0.06373045219647762,
+      "spearman_ci_low": -0.025930257824953742,
+      "spearman_rho": 0.018752330624368613,
+      "subset": "EVAL3-Test2000-Full"
+    }
+  ]
+}
