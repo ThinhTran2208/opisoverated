@@ -169,7 +169,8 @@ class VlmPromptV2Tests(unittest.TestCase):
         self.assertIn("Do not change this candidate identity or rank", text)
         self.assertIn(PROMPT_CONTEXT_SCHEMA_VERSION_V2, text)
         self.assertIn("Raw scorer, LOO, and recommendation numerical values are deliberately omitted", text)
-        self.assertIn("no free-text fields", text)
+        self.assertIn("no other free-text fields", text)
+        self.assertIn("user_reason", text)
         self.assertIn("language about scores", SYSTEM_PROMPT_V2)
 
         self.assertEqual(

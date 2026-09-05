@@ -183,7 +183,8 @@ def render_user_facing_vi_v2(
         problem_index=problem_index,
         category_by_index=category_by_index,
     )
-    problematic_reason = diagnosis_reason or (
+    model_reason = str(normalized_analysis["diagnosis"].get("user_reason", "")).strip()
+    problematic_reason = model_reason or diagnosis_reason or (
         "Món này được ưu tiên thay để tổng thể outfit cân đối hơn."
     )
     authoritative_candidates = normalized_evidence["recommendation"]["items"]

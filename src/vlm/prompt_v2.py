@@ -68,7 +68,8 @@ user. Your job is narrower: inspect the supplied images and extract only useful,
 image-grounded visual evidence that can help explain the fixed decisions.
 
 Think of your output as internal evidence for a deterministic renderer, not as a
-vote on whether the upstream system was right. Do not write user-facing prose.
+vote on whether the upstream system was right. The only user-facing prose you
+may write is the tightly constrained diagnosis.user_reason field below.
 Raw numerical scorer, LOO, and recommendation values are intentionally omitted
 from your prompt context so that visual judgments are based on images rather than
 score anchoring. Never reconstruct or guess those values.
@@ -78,8 +79,9 @@ Hard rules:
    choose a different problematic item.
 2. Copy all three recommendation ranks and item_ids exactly and in the same
    order. Never invent, remove, replace, or rerank recommendation candidates.
-3. Return no natural-language prose. Every generated string other than copied
-   item_ids must be one of the explicitly allowed enum or schema tokens.
+3. Return no natural-language prose outside diagnosis.user_reason. That field is
+   the only prose exception and must follow the grounding rules below; every
+   other generated string must be an explicitly allowed enum or schema token.
 4. Use only visible color, pattern, silhouette, formality, and style relations.
    Use the full original outfit image for composition and context, and the bound
    crops for item-level detail. Do not infer brand, material, price, occasion,
@@ -96,7 +98,10 @@ Hard rules:
    contradicts_loo is reserved for clear internal-QA evidence that the fixed item
    visually aligns with the outfit; do not search for contradiction as the main
    task and do not manufacture it merely because the item looks acceptable in
-   isolation.
+   isolation. If overall_visual_support is supports_loo, write one or two concise
+   Vietnamese sentences in diagnosis.user_reason, at most 300 characters, using
+   only visible relations from the supplied images. If it is ambiguous or
+   contradicts_loo, diagnosis.user_reason must be an empty string.
 7. Each recommendation candidate has already been selected as a replacement.
    Evaluate each candidate independently against the remaining original outfit
    context, excluding the problematic original item. First look for one concrete
@@ -130,8 +135,9 @@ Hard rules:
 16. Confidence describes only how clearly the claimed visual relation is visible
     in the supplied images. It is not confidence in the scorer, LOO decision, or
     recommendation rank.
-17. This is an internal JSON evidence task. Never emit user-facing prose or
-    language about scores, points, logits, percentages, probabilities,
+17. This is an internal JSON evidence task. Never emit user-facing prose except
+    the single grounded diagnosis.user_reason field. Never emit language about scores,
+    points, logits, percentages, probabilities,
     confidence in the system, or numerical quality ratings. Downstream copy
     must describe visible outfit relations only; recommendation order is already
     fixed and must not be justified with a number.
@@ -301,6 +307,7 @@ def expected_output_shape_v2(evidence: Mapping[str, object]) -> dict:
                     "confidence": "low",
                 }
             ],
+            "user_reason": "",
         },
         "recommendations": recommendations,
         "limitations": list(required_limitations_v2(normalized)),
@@ -333,12 +340,13 @@ def _output_contract_text_v2(evidence: Mapping[str, object]) -> str:
     return (
         "OUTPUT JSON CONTRACT (schema instructions, NOT an example analysis):\n"
         "Top-level keys must be exactly: schema_version, problematic_item_index, "
-        "problematic_item_id, diagnosis, recommendations, limitations; no free-text fields "
-        "are allowed.\n"
+        "problematic_item_id, diagnosis, recommendations, limitations; no other "
+        "free-text fields are allowed.\n"
         f"- schema_version must be exactly {VISUAL_ANALYSIS_SCHEMA_VERSION_V2}.\n"
         f"- problematic_item_index must be exactly {problem_index}.\n"
         f"- problematic_item_id must be exactly {problem_id}.\n"
-        "- diagnosis must contain exactly overall_visual_support and visual_observations.\n"
+        "- diagnosis must contain exactly overall_visual_support, visual_observations, "
+        "and user_reason.\n"
         f"  * overall_visual_support: choose one of {list(DIAGNOSIS_OVERALL_SUPPORT_V2)} "
         "from the outfit images. This field is internal visual evidence; it does not change "
         "the authoritative problematic item.\n"
@@ -355,6 +363,11 @@ def _output_contract_text_v2(evidence: Mapping[str, object]) -> str:
         f"  * dimension: choose one of {list(VISUAL_DIMENSIONS_V2)}.\n"
         f"  * effect: choose one of {list(DIAGNOSIS_EFFECTS_V2)}.\n"
         f"  * confidence: choose one of {list(VISUAL_CONFIDENCE_LEVELS_V2)}.\n"
+        "  * user_reason: a natural Vietnamese explanation for the fixed problematic item. "
+        "When overall_visual_support=supports_loo, write one or two concise sentences, "
+        "at most 300 characters, using only visible relations from the supplied images. "
+        "When overall_visual_support is ambiguous or contradicts_loo, use the empty string. "
+        "Never mention scores, ranks, models, or hidden metadata.\n"
         "- recommendations must be a JSON list of exactly three objects in this exact "
         "identity order:\n"
         f"{recommendation_identity_lines}\n"
@@ -574,7 +587,10 @@ def append_repair_request_v2(
                     "text": (
                         "Your previous response failed deterministic VLM V2 validation: "
                         f"{validation_error}. Return corrected JSON only. Do not emit "
-                        "natural-language strings. Do not change the problematic item, "
+                        "natural-language strings outside diagnosis.user_reason. If "
+                        "diagnosis supports_loo, user_reason must be one or two concise "
+                        "Vietnamese sentences of at most 300 characters grounded in the "
+                        "supplied images; otherwise it must be empty. Do not change the problematic item, "
                         "recommendation candidate identities, or recommendation ranks. "
                         "Diagnosis observations must include the problematic item plus at "
                         "least one other original outfit item. For each recommendation, seek "

@@ -131,9 +131,11 @@ medium
 high
 ```
 
-Qwen does not write user-facing prose. Free-text fields such as `headline`,
-`reason`, `description`, `recommendation_text`, or `explanation` are not part of
-`vlm-visual-analysis-v2`.
+Qwen writes only one tightly constrained user-facing field:
+`diagnosis.user_reason`. It is one or two Vietnamese sentences, at most 300
+characters, and must describe visible relations only. Free-text fields such as
+`headline`, `reason`, `description`, `recommendation_text`, or `explanation` are
+not part of `vlm-visual-analysis-v2`.
 
 ## Explanation-role policy
 

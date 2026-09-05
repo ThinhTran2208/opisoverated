@@ -103,6 +103,7 @@ def valid_analysis():
                 "confidence": "medium",
             }
         ],
+        "user_reason": "Chiếc áo này lệch tông màu với các món còn lại trong outfit.",
     }
     analysis["recommendations"][0] = {
         "rank": 1,
@@ -125,6 +126,10 @@ class VlmValidatorV2Tests(unittest.TestCase):
         normalized = validate_visual_analysis_v2(valid_analysis(), evidence_fixture())
         self.assertEqual(normalized["problematic_item_index"], 1)
         self.assertEqual(normalized["problematic_item_id"], "bottom")
+        self.assertEqual(
+            normalized["diagnosis"]["user_reason"],
+            "Chiếc áo này lệch tông màu với các món còn lại trong outfit.",
+        )
         self.assertEqual(
             [(row["rank"], row["item_id"]) for row in normalized["recommendations"]],
             [(1, "candidate-a"), (2, "candidate-b"), (3, "candidate-c")],
@@ -166,6 +171,18 @@ class VlmValidatorV2Tests(unittest.TestCase):
             "Đôi này nhìn không hợp, nên thay đi"
         )
         with self.assertRaisesRegex(ValueError, "must be one of"):
+            validate_visual_analysis_v2(analysis, evidence_fixture())
+
+    def test_rejects_scoring_language_in_user_reason(self):
+        analysis = valid_analysis()
+        analysis["diagnosis"]["user_reason"] = "Điểm outfit này thấp hơn vì áo không hợp."
+        with self.assertRaisesRegex(ValueError, "internal scoring term"):
+            validate_visual_analysis_v2(analysis, evidence_fixture())
+
+    def test_requires_user_reason_for_grounded_diagnosis(self):
+        analysis = valid_analysis()
+        analysis["diagnosis"]["user_reason"] = ""
+        with self.assertRaisesRegex(ValueError, "user_reason is required"):
             validate_visual_analysis_v2(analysis, evidence_fixture())
 
     def test_diagnosis_observation_must_include_problematic_item(self):

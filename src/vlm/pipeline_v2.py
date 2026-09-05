@@ -45,6 +45,48 @@ EXPLANATION_SCHEMA_VERSION_V2 = "vlm-explanation-v2"
 RUN_SCHEMA_VERSION_V2 = "vlm-run-v2"
 HANDOFF_SCHEMA_VERSION_V2 = "vlm-handoff-v2"
 
+_USER_REASON_MAX_CHARS = 300
+_FORBIDDEN_USER_REASON_TERMS = (
+    "score",
+    "điểm",
+    "logit",
+    "probability",
+    "confidence",
+    "phần trăm",
+    "xếp hạng",
+    "rank",
+    "qwen",
+    "mô hình",
+)
+
+
+def _validate_user_reason(
+    value: object,
+    *,
+    overall_visual_support: str,
+) -> str:
+    if not isinstance(value, str):
+        raise ValueError("diagnosis.user_reason must be a string")
+    reason = value.strip()
+    if len(reason) > _USER_REASON_MAX_CHARS:
+        raise ValueError(
+            f"diagnosis.user_reason must be at most {_USER_REASON_MAX_CHARS} characters"
+        )
+    if "\n" in reason or "\r" in reason:
+        raise ValueError("diagnosis.user_reason must be a single-line string")
+    lowered = reason.casefold()
+    if any(term in lowered for term in _FORBIDDEN_USER_REASON_TERMS):
+        raise ValueError("diagnosis.user_reason contains an internal scoring term")
+    if overall_visual_support == "supports_loo" and not reason:
+        raise ValueError(
+            "diagnosis.user_reason is required when diagnosis supports_loo"
+        )
+    if overall_visual_support != "supports_loo" and reason:
+        raise ValueError(
+            "diagnosis.user_reason must be empty unless diagnosis supports_loo"
+        )
+    return reason
+
 DIAGNOSIS_EFFECT_LABELS_VI = {
     "supports_loo": "ủng hộ chẩn đoán LOO",
     "ambiguous": "chưa cho tín hiệu thị giác rõ ràng",
@@ -345,10 +387,13 @@ def validate_visual_analysis_v2(
         raise ValueError("VLM attempted to change problematic_item_id")
 
     diagnosis = analysis.get("diagnosis")
-    if not isinstance(diagnosis, Mapping) or set(diagnosis) != {
+    diagnosis_keys = set(diagnosis) if isinstance(diagnosis, Mapping) else set()
+    legacy_diagnosis_keys = {
         "overall_visual_support",
         "visual_observations",
-    }:
+    }
+    diagnosis_keys_with_reason = legacy_diagnosis_keys | {"user_reason"}
+    if diagnosis_keys != legacy_diagnosis_keys and diagnosis_keys != diagnosis_keys_with_reason:
         raise ValueError("diagnosis visual analysis has invalid schema")
 
     diagnosis_overall = _enum(
@@ -369,6 +414,12 @@ def validate_visual_analysis_v2(
         contradict_token="contradicts_loo",
         name="diagnosis.overall_visual_support",
     )
+    user_reason = ""
+    if "user_reason" in diagnosis:
+        user_reason = _validate_user_reason(
+            diagnosis.get("user_reason"),
+            overall_visual_support=diagnosis_overall,
+        )
 
     recommendation_rows = analysis.get("recommendations")
     authoritative_rows = normalized_evidence["recommendation"]["items"]
@@ -445,6 +496,7 @@ def validate_visual_analysis_v2(
         "diagnosis": {
             "overall_visual_support": diagnosis_overall,
             "visual_observations": diagnosis_observations,
+            "user_reason": user_reason,
         },
         "recommendations": normalized_recommendations,
         "limitations": expected_limitations,

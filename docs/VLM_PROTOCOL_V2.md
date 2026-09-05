@@ -334,7 +334,8 @@ The original problematic item remains among the original outfit crops. Candidate
 
 Qwen is a constrained visual-evidence extractor.
 
-It must not write user-facing prose.
+It must not write user-facing prose except the constrained
+`diagnosis.user_reason` field described below.
 
 Its task is to classify visible relations using a closed taxonomy.
 
@@ -409,7 +410,7 @@ Qwen must not:
 - infer user intent;
 - infer demographics;
 - invent unsupported fashion facts;
-- output arbitrary free-text fields;
+- output arbitrary free-text fields outside `diagnosis.user_reason`;
 - output Markdown or extra keys outside the required JSON contract.
 
 ---
@@ -438,7 +439,15 @@ Diagnosis keys must be exactly:
 ```text
 overall_visual_support
 visual_observations
+user_reason
 ```
+
+`user_reason` is the only natural-language field. When
+`overall_visual_support` is `supports_loo`, it must contain one or two concise
+Vietnamese sentences of at most 300 characters, grounded in visible relations
+from the supplied images. When the label is `ambiguous` or `contradicts_loo`,
+it must be an empty string. It must not mention scores, ranks, models, or hidden
+metadata.
 
 Each diagnosis observation contains exactly:
 
@@ -745,7 +754,8 @@ The following are protocol-breaking changes and require an explicit new protocol
 - changing the number of authoritative candidates from three;
 - exposing raw scorer/LOO/recommendation numerical values to Qwen;
 - exposing benchmark ground truth to Qwen;
-- adding unrestricted natural-language decision fields to Qwen output;
+- adding unrestricted natural-language decision fields to Qwen output (the
+  constrained `diagnosis.user_reason` extension is allowed);
 - changing candidate-image identity binding rules;
 - changing required limitation semantics;
 - changing deploy to consume internal/debug output instead of the public boundary.

@@ -196,6 +196,29 @@ class VlmUserRendererV2Tests(unittest.TestCase):
         self.assertIn("mẫu túi 2", prose)
         self.assertIn("phù hợp hơn với outfit", prose)
 
+    def test_uses_grounded_natural_reason_when_vlm_provides_one(self):
+        analysis = analysis_fixture()
+        analysis["diagnosis"] = {
+            "overall_visual_support": "supports_loo",
+            "visual_observations": [
+                {
+                    "item_indices": [3, 0],
+                    "dimension": "color_harmony",
+                    "effect": "supports_loo",
+                    "confidence": "high",
+                }
+            ],
+            "user_reason": (
+                "Chiếc túi hiện tại tạo tương phản màu khá mạnh với phần áo, "
+                "khiến tổng thể kém liền mạch hơn."
+            ),
+        }
+        rendered = render_user_facing_vi_v2(analysis, evidence_fixture())
+        self.assertEqual(
+            rendered["problematic_item"]["reason"],
+            analysis["diagnosis"]["user_reason"],
+        )
+
     def test_user_prose_hides_internal_implementation_terms(self):
         rendered = render_user_facing_vi_v2(analysis_fixture(), evidence_fixture())
         prose = " ".join(
