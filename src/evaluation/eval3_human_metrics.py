@@ -86,6 +86,7 @@ def kendall_value(
             dy = yi - y[j]
 
             if dx == 0.0 and dy == 0.0:
+                # Tied in both variables: contributes to neither denominator.
                 continue
             if dx == 0.0:
                 ties_x_only += 1
@@ -121,6 +122,7 @@ def _average_ranks(values: Sequence[float]) -> list[float]:
         while j < len(indexed) and indexed[j][1] == value:
             j += 1
 
+        # 1-based average rank for positions i..j-1.
         average_rank = ((i + 1) + j) / 2.0
         for k in range(i, j):
             original_index = indexed[k][0]
