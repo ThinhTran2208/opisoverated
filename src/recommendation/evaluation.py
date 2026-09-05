@@ -1,17 +1,18 @@
 # -*- coding: utf-8 -*-
-"""Evaluation3 metrics and ordered trace export for Recommendation V1."""
+"""Polyvore one-item-swap recovery metrics for Recommendation V2."""
 from __future__ import annotations
 
 import argparse
 import json
 from collections import Counter
 from pathlib import Path
+from statistics import median
 from typing import Mapping, Sequence
 
 from .pipeline import RecommendationPipeline
 from .trace import CandidateTraceWriter, candidate_trace_record
 
-EVALUATION_PROTOCOL = "evaluation3-one-item-swap-v1"
+EVALUATION_PROTOCOL = "polyvore-one-item-swap-recovery-v2-rank-diagnostics"
 DEFAULT_EPSILON = 0.0
 
 
@@ -20,6 +21,8 @@ def _rank(items: Sequence[str], ground_truth: str) -> int | None:
 
 
 class Evaluation3Evaluator:
+    """Legacy class name; evaluates Polyvore synthetic one-swap recovery."""
+
     def __init__(self, pipeline, *, epsilon: float = DEFAULT_EPSILON) -> None:
         self.pipeline = pipeline
         self.epsilon = float(epsilon)
@@ -33,21 +36,37 @@ class Evaluation3Evaluator:
             if max_samples < 1:
                 raise ValueError("max_samples must be >= 1")
             negatives = negatives[:max_samples]
+
         excluded, failures, coverage = Counter(), Counter(), Counter()
         for key in ("missing_embedding", "missing_metadata", "missing_image",
                     "missing_negative_metadata", "invalid_negative_metadata"):
             excluded[key] = 0
         for key in ("ground_truth_not_in_hybrid_top200",
-                    "ground_truth_in_hybrid_not_final_top3",
+                    "ground_truth_not_in_full_union",
+                    "ground_truth_missing_after_rerank",
                     "fewer_than_three_final_candidates",
                     "image_read_error", "scorer_error"):
             failures[key] = 0
+
         hits = {stage: {50: 0, 100: 0, 200: 0}
                 for stage in ("item_only", "context_only", "hybrid")}
-        hit1 = hit3 = 0
-        rr_sum = 0.0
+
+        # Reranking diagnostics are conditioned on GT being present in the exact
+        # full union that is passed to the frozen scorer. The before-rerank rank
+        # is the deterministic hybrid union order produced by retrieval.py:
+        # best channel rank first, then item_id as a deterministic tie-break.
+        full_union_gt_count = 0
+        rank_evaluable_count = 0
+        rank_improved_count = 0
+        rank_unchanged_count = 0
+        rank_worsened_count = 0
+        pre_rr_sum = 0.0
+        post_rr_sum = 0.0
+        rank_changes: list[int] = []
+
         successful = evaluated_recommendations = 0
         records: list[dict[str, object]] = []
+
         ground_truth_ids = [
             str(meta.get("original_item_id", ""))
             for row in negatives
@@ -73,11 +92,13 @@ class Evaluation3Evaluator:
                         problematic_item_id=problem_id,
                         ground_truth_item_id=ground_truth or None,
                         replacement_item_id=replacement or None)
+
             reason = None
             if not isinstance(meta, Mapping):
                 reason = "missing_negative_metadata"
             elif not valid_index or not ground_truth or not replacement or problem_id != replacement:
                 reason = "invalid_negative_metadata"
+
             required = item_ids + ([ground_truth] if ground_truth else [])
             miss_emb = [x for x in required if x not in self.pipeline.catalog]
             miss_meta = [x for x in required if self.pipeline.metadata.category_id(x) is None or self.pipeline.metadata.master_category(x) is None]
@@ -86,15 +107,20 @@ class Evaluation3Evaluator:
             coverage["embedding_available"] += len(required) - len(miss_emb)
             coverage["metadata_available"] += len(required) - len(miss_meta)
             coverage["image_available"] += len(required) - len(miss_img)
-            if reason is None and miss_emb: reason = "missing_embedding"
-            if reason is None and miss_meta: reason = "missing_metadata"
-            if reason is None and miss_img: reason = "missing_image"
+            if reason is None and miss_emb:
+                reason = "missing_embedding"
+            if reason is None and miss_meta:
+                reason = "missing_metadata"
+            if reason is None and miss_img:
+                reason = "missing_image"
             if reason:
                 excluded[reason] += 1
                 trace = candidate_trace_record(**base, failure_reason=reason)
                 records.append(trace)
-                if trace_writer: trace_writer.append(trace)
+                if trace_writer:
+                    trace_writer.append(trace)
                 continue
+
             try:
                 if ground_truth in image_read_failures:
                     raise OSError(image_read_failures[ground_truth])
@@ -104,114 +130,295 @@ class Evaluation3Evaluator:
                 failures["image_read_error"] += 1
                 trace = candidate_trace_record(**base, failure_reason=f"image_read_error: {type(error).__name__}")
                 records.append(trace)
-                if trace_writer: trace_writer.append(trace)
+                if trace_writer:
+                    trace_writer.append(trace)
                 continue
+
             try:
                 embeddings = self.pipeline.catalog.get_embeddings(item_ids)
                 categories = [int(self.pipeline.metadata.category_id(x)) for x in item_ids]
                 retrieval, reranked = self.pipeline.rank_candidates(
-                    outfit_item_ids=item_ids, outfit_embeddings=embeddings,
-                    outfit_category_ids=categories, problematic_index=swapped)
+                    outfit_item_ids=item_ids,
+                    outfit_embeddings=embeddings,
+                    outfit_category_ids=categories,
+                    problematic_index=swapped,
+                )
             except Exception as error:
                 failures["scorer_error"] += 1
                 trace = candidate_trace_record(**base, failure_reason=f"scorer_error: {type(error).__name__}")
                 records.append(trace)
-                if trace_writer: trace_writer.append(trace)
+                if trace_writer:
+                    trace_writer.append(trace)
                 continue
 
             item_order = [x.item_id for x in retrieval.problematic_hits][:200]
             context_order = [x.item_id for x in retrieval.context_hits][:200]
-            hybrid_order = [x.item_id for x in retrieval.candidates][:200]
+            full_union_order = [x.item_id for x in retrieval.candidates]
+            hybrid_order = full_union_order[:200]
             all_reranked = [x.item_id for x in reranked]
             final_order = all_reranked[:3]
+
             if len(final_order) < 3:
                 failures["fewer_than_three_final_candidates"] += 1
-            for stage, order in (("item_only", item_order), ("context_only", context_order), ("hybrid", hybrid_order)):
+
+            for stage, order in (("item_only", item_order),
+                                 ("context_only", context_order),
+                                 ("hybrid", hybrid_order)):
                 rank = _rank(order, ground_truth)
-                for k in (50, 100, 200): hits[stage][k] += int(rank is not None and rank <= k)
-            rerank_rank = _rank(all_reranked, ground_truth)
-            hit1 += int(rerank_rank == 1); hit3 += int(rerank_rank is not None and rerank_rank <= 3)
-            rr_sum += 0.0 if rerank_rank is None else 1.0 / rerank_rank
-            if ground_truth not in hybrid_order: failures["ground_truth_not_in_hybrid_top200"] += 1
-            elif ground_truth not in final_order: failures["ground_truth_in_hybrid_not_final_top3"] += 1
+                for k in (50, 100, 200):
+                    hits[stage][k] += int(rank is not None and rank <= k)
+
+            if ground_truth not in hybrid_order:
+                failures["ground_truth_not_in_hybrid_top200"] += 1
+
+            pre_rank = _rank(full_union_order, ground_truth)
+            post_rank = None
+            rank_change = None
+            if pre_rank is None:
+                failures["ground_truth_not_in_full_union"] += 1
+            else:
+                full_union_gt_count += 1
+                post_rank = _rank(all_reranked, ground_truth)
+                if post_rank is None:
+                    # This should never happen because reranking must preserve the
+                    # candidate set. Keep it explicit as an implementation failure.
+                    failures["ground_truth_missing_after_rerank"] += 1
+                else:
+                    rank_evaluable_count += 1
+                    rank_change = int(pre_rank - post_rank)
+                    rank_changes.append(rank_change)
+                    pre_rr_sum += 1.0 / pre_rank
+                    post_rr_sum += 1.0 / post_rank
+                    if rank_change > 0:
+                        rank_improved_count += 1
+                    elif rank_change == 0:
+                        rank_unchanged_count += 1
+                    else:
+                        rank_worsened_count += 1
+
             for candidate in reranked[:3]:
                 evaluated_recommendations += 1
                 successful += int(candidate.improvement_logit > self.epsilon)
+
             trace = candidate_trace_record(
-                **base, item_ids=item_order, context_ids=context_order,
-                hybrid_ids=hybrid_order, final_ids=final_order,
-                candidate_counts={"item_retrieval": len(item_order), "context_retrieval": len(context_order),
-                                  "hybrid_top200": len(hybrid_order), "reranked": len(reranked), "final": len(final_order)},
-                excluded_counts={"master_category": retrieval.master_category_filtered_count,
-                                 "missing_metadata": retrieval.missing_metadata_count,
-                                 "missing_image": retrieval.missing_image_count,
-                                 "missing_embedding": retrieval.missing_embedding_count})
+                **base,
+                item_ids=item_order,
+                context_ids=context_order,
+                hybrid_ids=hybrid_order,
+                final_ids=final_order,
+                candidate_counts={
+                    "category_pool": retrieval.category_pool_count,
+                    "item_retrieval": len(item_order),
+                    "context_retrieval": len(context_order),
+                    "hybrid_top200": len(hybrid_order),
+                    "full_union": len(full_union_order),
+                    "reranked": len(reranked),
+                    "final": len(final_order),
+                },
+                excluded_counts={
+                    "master_category": retrieval.master_category_filtered_count,
+                    "missing_metadata": retrieval.missing_metadata_count,
+                    "missing_image": retrieval.missing_image_count,
+                    "missing_embedding": retrieval.missing_embedding_count,
+                },
+            )
+            trace["gt_rank_pre_rerank"] = pre_rank
+            trace["gt_rank_post_rerank"] = post_rank
+            trace["gt_rank_change_pre_minus_post"] = rank_change
             records.append(trace)
-            if trace_writer: trace_writer.append(trace)
+            if trace_writer:
+                trace_writer.append(trace)
 
         runtime_failures = failures["scorer_error"] + failures["image_read_error"]
         evaluated = len(negatives) - sum(excluded.values()) - runtime_failures
-        if not evaluated: raise ValueError("Evaluation3 has no eligible rows")
+        if not evaluated:
+            raise ValueError("One-item-swap evaluation has no eligible rows")
+
         ratio = lambda n: n / evaluated
         checks = coverage["required_item_checks"]
+
+        if rank_evaluable_count:
+            conditional_mrr_pre = pre_rr_sum / rank_evaluable_count
+            conditional_mrr_post = post_rr_sum / rank_evaluable_count
+            conditional_mrr_gain = conditional_mrr_post - conditional_mrr_pre
+            rank_improved_rate = rank_improved_count / rank_evaluable_count
+            rank_unchanged_rate = rank_unchanged_count / rank_evaluable_count
+            rank_worsened_rate = rank_worsened_count / rank_evaluable_count
+            mean_rank_change = sum(rank_changes) / rank_evaluable_count
+            median_rank_change = float(median(rank_changes))
+        else:
+            conditional_mrr_pre = None
+            conditional_mrr_post = None
+            conditional_mrr_gain = None
+            rank_improved_rate = None
+            rank_unchanged_rate = None
+            rank_worsened_rate = None
+            mean_rank_change = None
+            median_rank_change = None
+
         return {
-            "protocol_version": EVALUATION_PROTOCOL, "split": split, "epsilon": self.epsilon,
-            "score_type": "compatibility_logit", "total_queries": len(negatives),
-            "valid_queries": evaluated, "excluded_queries": len(negatives) - evaluated,
+            "protocol_version": EVALUATION_PROTOCOL,
+            "split": split,
+            "epsilon": self.epsilon,
+            "score_type": "compatibility_logit",
+            "total_queries": len(negatives),
+            "valid_queries": evaluated,
+            "excluded_queries": len(negatives) - evaluated,
             "is_full_split": max_samples is None,
-            "coverage": {**dict(coverage),
+            "image_catalog_validation": getattr(self.pipeline, "image_validation", None),
+            "coverage": {
+                **dict(coverage),
                 "embedding_ratio": coverage["embedding_available"] / checks if checks else 0.0,
                 "metadata_ratio": coverage["metadata_available"] / checks if checks else 0.0,
-                "image_ratio": coverage["image_available"] / checks if checks else 0.0},
-            "excluded": dict(sorted(excluded.items())), "failures": dict(sorted(failures.items())),
-            "retrieval": {stage: {f"recall_at_{k}": ratio(n) for k, n in values.items()} for stage, values in hits.items()},
-            "reranking": {"hit_at_1": ratio(hit1), "hit_at_3": ratio(hit3), "mrr": ratio(rr_sum)},
-            "replacement_quality": {"success_rate": successful / evaluated_recommendations if evaluated_recommendations else None,
-                                    "successful": successful, "evaluated_recommendations": evaluated_recommendations},
+                "image_ratio": coverage["image_available"] / checks if checks else 0.0,
+            },
+            "excluded": dict(sorted(excluded.items())),
+            "failures": dict(sorted(failures.items())),
+            "retrieval": {
+                stage: {f"recall_at_{k}": ratio(n) for k, n in values.items()}
+                for stage, values in hits.items()
+            },
+            "reranking": {
+                "metric": "conditional_exact_reference_rank_diagnostics",
+                "eligible_queries_gt_in_full_union": full_union_gt_count,
+                "rank_evaluable_queries": rank_evaluable_count,
+                "full_union_gt_coverage": ratio(full_union_gt_count),
+                "gt_rank_improved_count": rank_improved_count,
+                "gt_rank_unchanged_count": rank_unchanged_count,
+                "gt_rank_worsened_count": rank_worsened_count,
+                "gt_rank_improved_rate": rank_improved_rate,
+                "gt_rank_unchanged_rate": rank_unchanged_rate,
+                "gt_rank_worsened_rate": rank_worsened_rate,
+                "mean_rank_change_pre_minus_post": mean_rank_change,
+                "median_rank_change_pre_minus_post": median_rank_change,
+                "conditional_mrr_before_scorer": conditional_mrr_pre,
+                "conditional_mrr_after_scorer": conditional_mrr_post,
+                "conditional_mrr_gain": conditional_mrr_gain,
+            },
+            "replacement_quality": {
+                "success_rate": successful / evaluated_recommendations if evaluated_recommendations else None,
+                "successful": successful,
+                "evaluated_recommendations": evaluated_recommendations,
+            },
             "records": records,
         }
 
 
 def report_markdown(result: Mapping[str, object]) -> str:
     retrieval, reranking = result["retrieval"], result["reranking"]
-    f = lambda x: f"{float(x):.6f}"
+    f = lambda x: "N/A" if x is None else f"{float(x):.6f}"
     rows = []
-    for label, key in (("Item-only", "item_only"), ("Context-only", "context_only"), ("Hybrid pre-rerank", "hybrid")):
+    for label, key in (("Item-only", "item_only"),
+                       ("Context-only", "context_only"),
+                       ("Hybrid Top-200", "hybrid")):
         m = retrieval[key]
-        rows.append(f"| {label} | {f(m['recall_at_50'])} | {f(m['recall_at_100'])} | {f(m['recall_at_200'])} | N/A | N/A | N/A |")
-    rows.append(f"| Hybrid + scorer | N/A | N/A | N/A | {f(reranking['hit_at_1'])} | {f(reranking['hit_at_3'])} | {f(reranking['mrr'])} |")
-    return "\n".join(["# Recommendation V1 — Evaluation3", "",
-        f"Split: `{result['split']}`. Epsilon cố định: `{result['epsilon']}` trên `compatibility_logit`.", "",
-        "| Stage | Recall@50 | Recall@100 | Recall@200 | Hit@1 | Hit@3 | MRR |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |", *rows, "",
-        "Evaluation3 hiện tại mỗi query có một ground-truth item, nên Recall@K và Hit@K có cùng giá trị số ở retrieval stage.", "",
-        f"- Tổng query: {result['total_queries']}", f"- Query hợp lệ: {result['valid_queries']}",
+        rows.append(
+            f"| {label} | {f(m['recall_at_50'])} | {f(m['recall_at_100'])} | {f(m['recall_at_200'])} |"
+        )
+
+    return "\n".join([
+        "# Recommendation V2 — Retrieval + Reranking Rank Diagnostics",
+        "",
+        f"Split: `{result['split']}`. Epsilon cố định: `{result['epsilon']}` trên `compatibility_logit`.",
+        "",
+        "## Retrieval",
+        "",
+        "| Stage | Recall@50 | Recall@100 | Recall@200 |",
+        "| --- | ---: | ---: | ---: |",
+        *rows,
+        "",
+        f"- Full-union GT coverage: {f(reranking['full_union_gt_coverage'])}",
+        f"- GT có mặt trong full union: {reranking['eligible_queries_gt_in_full_union']}",
+        "",
+        "## Frozen scorer reranking — conditional exact-reference diagnostics",
+        "",
+        f"- Query đủ điều kiện rank comparison: {reranking['rank_evaluable_queries']}",
+        f"- GT rank improved: {reranking['gt_rank_improved_count']} ({f(reranking['gt_rank_improved_rate'])})",
+        f"- GT rank unchanged: {reranking['gt_rank_unchanged_count']} ({f(reranking['gt_rank_unchanged_rate'])})",
+        f"- GT rank worsened: {reranking['gt_rank_worsened_count']} ({f(reranking['gt_rank_worsened_rate'])})",
+        f"- Mean rank change (pre - post): {f(reranking['mean_rank_change_pre_minus_post'])}",
+        f"- Median rank change (pre - post): {f(reranking['median_rank_change_pre_minus_post'])}",
+        f"- Conditional MRR before scorer: {f(reranking['conditional_mrr_before_scorer'])}",
+        f"- Conditional MRR after scorer: {f(reranking['conditional_mrr_after_scorer'])}",
+        f"- Conditional MRR gain: {f(reranking['conditional_mrr_gain'])}",
+        "",
+        "Rank change dương nghĩa là frozen scorer đã đẩy exact GT lên vị trí cao hơn so với deterministic full-union order trước rerank.",
+        "Conditional MRR before/after chỉ tính trên cùng các query mà GT có trong full union, nên tách ảnh hưởng của retrieval khỏi reranking.",
+        "Các metric này vẫn chỉ theo dõi original swapped-out reference; chúng không phải recommendation accuracy hay human preference.",
+        "",
+        f"- Tổng query: {result['total_queries']}",
+        f"- Query hợp lệ: {result['valid_queries']}",
         f"- Query bị loại: {result['excluded_queries']}",
         f"- Replacement Success Rate: {f(result['replacement_quality']['success_rate'])}",
+        f"- Image catalog: `{json.dumps(result.get('image_catalog_validation'), ensure_ascii=False)}`",
         f"- Coverage: `{json.dumps(result['coverage'], ensure_ascii=False)}`",
         f"- Excluded: `{json.dumps(result['excluded'], ensure_ascii=False)}`",
-        f"- Failures: `{json.dumps(result['failures'], ensure_ascii=False)}`", "",
-        "Score chỉ tồn tại trong evaluation nội bộ; public response và HTML demo không chứa score."]) + "\n"
+        f"- Failures: `{json.dumps(result['failures'], ensure_ascii=False)}`",
+        "",
+        "Ground truth là original item đã bị synthetic swap ra; nhiều replacement khác vẫn có thể hợp lý.",
+        "Score chỉ tồn tại trong evaluation nội bộ; public response không chứa score.",
+    ]) + "\n"
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run Recommendation V1 Evaluation3")
-    parser.add_argument("--ml-zip", required=True); parser.add_argument("--image-zip", action="append", required=True)
-    parser.add_argument("--config", default=str(Path(__file__).resolve().parents[2] / "configs" / "recommendation_hybrid_v1.json"))
-    parser.add_argument("--split", choices=("valid", "test"), default="test"); parser.add_argument("--device", default="cpu")
-    parser.add_argument("--max-samples", type=int, default=0); parser.add_argument("--output-dir", default="outputs")
+    parser = argparse.ArgumentParser(description="Run Recommendation V2 reranking rank diagnostics")
+    parser.add_argument("--artifact-root", help="Path to ML_Final directory")
+    parser.add_argument("--image-root", help="Path to item-image directory")
+    parser.add_argument("--ml-zip", help="Legacy ML_Final ZIP path")
+    parser.add_argument("--image-zip", action="append", help="Legacy image ZIP; may be repeated")
+    parser.add_argument("--config", default=str(Path(__file__).resolve().parents[2] / "configs" / "recommendation_category_aware_v2.json"))
+    parser.add_argument("--split", choices=("valid", "test"), default="test")
+    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--max-samples", type=int, default=0)
+    parser.add_argument("--output-dir", default="outputs")
     args = parser.parse_args()
-    pipeline = RecommendationPipeline.load_from_archives(args.config, ml_zip_path=args.ml_zip, image_zip_paths=args.image_zip, device=args.device)
-    out = Path(args.output_dir); out.mkdir(parents=True, exist_ok=True)
+
+    using_directories = bool(args.artifact_root or args.image_root)
+    using_archives = bool(args.ml_zip or args.image_zip)
+    if using_directories and using_archives:
+        parser.error("Choose directory mode OR ZIP mode, not both")
+    if using_directories:
+        if not args.artifact_root or not args.image_root:
+            parser.error("Directory mode requires both --artifact-root and --image-root")
+        pipeline = RecommendationPipeline.load_from_directories(
+            args.config,
+            artifact_root=args.artifact_root,
+            image_root=args.image_root,
+            device=args.device,
+        )
+    else:
+        if not args.ml_zip or not args.image_zip:
+            parser.error("ZIP mode requires --ml-zip and at least one --image-zip")
+        pipeline = RecommendationPipeline.load_from_archives(
+            args.config,
+            ml_zip_path=args.ml_zip,
+            image_zip_paths=args.image_zip,
+            device=args.device,
+        )
+
+    out = Path(args.output_dir)
+    out.mkdir(parents=True, exist_ok=True)
     trace_path = out / "recommendation_candidate_records.jsonl"
     trace_path.write_text("", encoding="utf-8")
-    result = Evaluation3Evaluator(pipeline).evaluate(pipeline.artifact_bundle.load_scorer_ready(args.split),
-        split=args.split, max_samples=None if args.max_samples == 0 else args.max_samples,
-        trace_writer=CandidateTraceWriter(trace_path))
-    serializable = dict(result); serializable.pop("records", None)
-    (out / "recommendation_evaluation_results.json").write_text(json.dumps(serializable, ensure_ascii=False, indent=2), encoding="utf-8")
-    (out / "recommendation_evaluation_report.md").write_text(report_markdown(serializable), encoding="utf-8")
-    print(json.dumps(serializable, ensure_ascii=False, indent=2)); return 0
+    result = Evaluation3Evaluator(pipeline).evaluate(
+        pipeline.artifact_bundle.load_scorer_ready(args.split),
+        split=args.split,
+        max_samples=None if args.max_samples == 0 else args.max_samples,
+        trace_writer=CandidateTraceWriter(trace_path),
+    )
+    serializable = dict(result)
+    serializable.pop("records", None)
+    (out / "recommendation_evaluation_results.json").write_text(
+        json.dumps(serializable, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (out / "recommendation_evaluation_report.md").write_text(
+        report_markdown(serializable),
+        encoding="utf-8",
+    )
+    print(json.dumps(serializable, ensure_ascii=False, indent=2))
+    return 0
 
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())

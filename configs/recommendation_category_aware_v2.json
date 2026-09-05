@@ -1,0 +1,19 @@
+{
+  "recommendation_version": "category-aware-hybrid-v2",
+  "artifact_mode": "zip-direct",
+  "retrieval_scope": "exact_master_category_before_cosine",
+  "runtime_fallback": "core7_when_master_category_unavailable",
+  "embedding_version": "fashionclip-512-l2-v1",
+  "expected_embedding_count": 142480,
+  "expected_image_count": 142480,
+  "top_k_problematic": 200,
+  "top_k_context": 200,
+  "final_k": 3,
+  "rerank_batch_size": 256,
+  "image_url_base": "/recommendation/images",
+  "scorer_version": "type_aware_pairwise_v1",
+  "checkpoint_entry": "ML_Final/scorer_runs/type_aware_pairwise_v1/final_val_auc_v5_seed42/best.pt",
+  "checkpoint_sha256": "7b3d0b6e0d44e3de517565f5725ded198bbc762b02a4dece26a58ee145cfed9c",
+  "category_mapping_version": "core7-v2",
+  "evaluation_protocol": "polyvore-one-item-swap-recovery-v2-rank-diagnostics"
+}

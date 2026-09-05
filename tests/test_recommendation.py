@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.recommendation.catalog import CatalogStatus, NpzShardCatalog, SearchHit, np
+from src.recommendation.catalog import CatalogStatus, NpzShardCatalog, np
 from src.recommendation.metadata import ItemMetadataIndex
 from src.recommendation.pipeline import RecommendationPipeline
 from src.recommendation.reranker import FrozenScorerReranker, RerankedCandidate, torch
@@ -21,21 +21,24 @@ def _unit(index):
 class _FakeCatalog:
     def __init__(self):
         self.status = CatalogStatus(8, 1, 8, 1, True)
-        self.search_calls = []
-
-    def search(self, query, *, k, exclude_item_ids=()):
-        self.search_calls.append((query, k, set(exclude_item_ids)))
-        if len(self.search_calls) == 1:
-            return [SearchHit("same", 0.9), SearchHit("wrong", 0.8), SearchHit("p-only", 0.7)]
-        return [SearchHit("same", 0.95), SearchHit("unknown", 0.85), SearchHit("c-only", 0.75)]
+        self.vectors = {
+            "same": _unit(10),
+            "p-only": _unit(11),
+            "c-only": _unit(12),
+            "wrong": _unit(10),
+            "outfit-a": _unit(10),
+            "outfit-b": _unit(11),
+            "outfit-c": _unit(12),
+        }
 
     def get_embeddings(self, item_ids):
+        rows = [self.vectors.get(item_id, _unit(0)) for item_id in item_ids]
         if np is None:
-            return [_unit(index) for index, _ in enumerate(item_ids)]
-        return np.asarray([_unit(index) for index, _ in enumerate(item_ids)], dtype=np.float32)
+            return rows
+        return np.asarray(rows, dtype=np.float32)
 
     def __contains__(self, item_id):
-        return True
+        return item_id in self.vectors
 
 
 class _FakeImageResolver:
@@ -101,11 +104,13 @@ class NpzShardCatalogTests(unittest.TestCase):
 
 @unittest.skipIf(np is None, "NumPy is not installed in lightweight portability CI")
 class HybridRetrievalTests(unittest.TestCase):
-    def test_union_dedup_and_strict_master_category_filter(self):
+    def test_category_filter_happens_before_both_cosine_searches(self):
         catalog = _FakeCatalog()
         metadata = ItemMetadataIndex(
             [
                 {"item_id": "outfit-a", "master_category": "T-Shirts", "coarse_category": "TOP"},
+                {"item_id": "outfit-b", "master_category": "Jeans", "coarse_category": "BOTTOM"},
+                {"item_id": "outfit-c", "master_category": "Shoes", "coarse_category": "SHOES"},
                 {"item_id": "same", "master_category": "T-Shirts", "coarse_category": "TOP"},
                 {"item_id": "wrong", "master_category": "Sweaters", "coarse_category": "TOP"},
                 {"item_id": "p-only", "master_category": "T-Shirts", "coarse_category": "TOP"},
@@ -116,30 +121,32 @@ class HybridRetrievalTests(unittest.TestCase):
             catalog,
             metadata=metadata,
             image_resolver=_FakeImageResolver(),
-            top_k_problematic=3,
-            top_k_context=3,
+            top_k_problematic=2,
+            top_k_context=2,
         ).retrieve(
             outfit_item_ids=["outfit-a", "outfit-b", "outfit-c"],
             outfit_embeddings=np.asarray([_unit(10), _unit(11), _unit(12)]),
             problematic_index=0,
             problematic_category_id=1,
         )
-        self.assertEqual(result.union_count, 5)
-        self.assertEqual(result.master_category_filtered_count, 1)
-        self.assertEqual(result.missing_metadata_count, 1)
-        self.assertEqual(
-            {candidate.item_id for candidate in result.candidates},
-            {"same", "p-only", "c-only"},
+        self.assertEqual(result.category_pool_count, 3)
+        self.assertEqual(result.master_category_filtered_count, 0)
+        self.assertNotIn("wrong", [row.item_id for row in result.problematic_hits])
+        self.assertNotIn("wrong", [row.item_id for row in result.context_hits])
+        self.assertTrue(
+            all(candidate.master_category == "T-Shirts" for candidate in result.candidates)
         )
-        same = next(row for row in result.candidates if row.item_id == "same")
-        self.assertEqual((same.problematic_rank, same.context_rank), (1, 1))
-        self.assertEqual(catalog.search_calls[0][2], {"outfit-a", "outfit-b", "outfit-c"})
+        self.assertEqual([row.item_id for row in result.problematic_hits][0], "same")
+        self.assertEqual(len(result.problematic_hits), 2)
+        self.assertEqual(len(result.context_hits), 2)
 
     def test_public_boundary_contains_no_scores(self):
         catalog = _FakeCatalog()
         metadata = ItemMetadataIndex(
             [
                 {"item_id": "outfit-a", "master_category": "T-Shirts", "coarse_category": "TOP"},
+                {"item_id": "outfit-b", "master_category": "Jeans", "coarse_category": "BOTTOM"},
+                {"item_id": "outfit-c", "master_category": "Shoes", "coarse_category": "SHOES"},
                 {"item_id": "same", "master_category": "T-Shirts", "coarse_category": "TOP"},
                 {"item_id": "wrong", "master_category": "Sweaters", "coarse_category": "TOP"},
                 {"item_id": "p-only", "master_category": "T-Shirts", "coarse_category": "TOP"},
@@ -161,6 +168,7 @@ class HybridRetrievalTests(unittest.TestCase):
             problematic_index=0,
         )
         public = result.to_public_dict()
+        self.assertEqual(public["recommendation_version"], "category-aware-hybrid-v2")
         self.assertEqual(len(public["items"]), 3)
         self.assertTrue(
             all(
@@ -180,6 +188,11 @@ class HybridRetrievalTests(unittest.TestCase):
         self.assertNotIn("logit", json.dumps(public).lower())
         self.assertNotIn("uplift", json.dumps(public).lower())
         self.assertIn("compatibility_logit", result.internal_metadata["reranked_candidates"][0])
+        self.assertEqual(
+            result.internal_metadata["retrieval"]["retrieval_scope"],
+            "exact_master_category",
+        )
+        self.assertFalse(result.internal_metadata["retrieval"]["used_core7_fallback"])
 
 
 class MetadataTests(unittest.TestCase):
@@ -206,8 +219,6 @@ class FrozenScorerRerankerTests(unittest.TestCase):
                 self.anchor = torch.nn.Parameter(torch.zeros(()))
 
             def forward(self, item_embeddings, coarse_category_ids, item_mask):
-                # Candidate signal is the first embedding coordinate. Category
-                # adds a small signal so the test can inspect fallback behavior.
                 logits = item_embeddings[:, :, 0].sum(dim=1)
                 logits = logits + coarse_category_ids.float().sum(dim=1) * 0.01
                 return {"compatibility_logit": logits + self.anchor}

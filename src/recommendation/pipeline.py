@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Standalone Recommendation V1 orchestration.
+"""Standalone Recommendation V2 orchestration.
 
-This module has no dependency on ``src.vlm``.  VLM Explanation V1 remains
-unable to generate or accept recommendation payloads.
+V2 changes candidate retrieval to category-aware search before cosine Top-K.
+It supports both legacy ZIP-direct artifacts and portable directory artifacts.
+Frozen scorer reranking and LOO integration remain unchanged.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from .reranker import FrozenScorerReranker, RerankedCandidate
 from .trace import CandidateTraceWriter, candidate_trace_record
 
 
-RECOMMENDATION_VERSION = "hybrid-retrieval-v1"
+RECOMMENDATION_VERSION = "category-aware-hybrid-v2"
 
 
 @dataclass(frozen=True)
@@ -52,8 +53,6 @@ class RecommendationResult:
     internal_metadata: dict[str, object]
 
     def to_public_dict(self) -> dict[str, object]:
-        """Serialize the user boundary without retrieval or scorer values."""
-
         return {
             "status": "ok",
             "recommendation_version": RECOMMENDATION_VERSION,
@@ -92,6 +91,62 @@ class RecommendationPipeline:
         self.final_k = int(final_k)
         self.trace_writer = trace_writer
 
+    @staticmethod
+    def _load_config(config_path: Path | str) -> dict[str, object]:
+        source = Path(config_path).resolve()
+        config = json.loads(source.read_text(encoding="utf-8"))
+        if not isinstance(config, dict):
+            raise ValueError("Recommendation config must be a JSON object")
+        if config.get("recommendation_version") != RECOMMENDATION_VERSION:
+            raise ValueError("Unsupported recommendation_version")
+        if config.get("retrieval_scope") != "exact_master_category_before_cosine":
+            raise ValueError("Recommendation V2 requires category-aware retrieval")
+        if config.get("runtime_fallback") != "core7_when_master_category_unavailable":
+            raise ValueError("Recommendation V2 runtime fallback contract mismatch")
+        if config.get("scorer_version") != "type_aware_pairwise_v1":
+            raise ValueError("Recommendation V2 requires the frozen V5 scorer contract")
+        if config.get("embedding_version") != "fashionclip-512-l2-v1":
+            raise ValueError("Recommendation V2 requires FashionCLIP 512-D embeddings")
+        if config.get("category_mapping_version") != "core7-v2":
+            raise ValueError("Recommendation V2 requires Core-7 V2 categories")
+        return config
+
+    @classmethod
+    def _build(
+        cls,
+        *,
+        config: dict[str, object],
+        bundle,
+        catalog,
+        metadata,
+        image_resolver,
+        device: str | object,
+    ) -> "RecommendationPipeline":
+        expected_embeddings = int(config.get("expected_embedding_count", 142_480))
+        if len(catalog) != expected_embeddings:
+            raise ValueError(
+                f"Expected {expected_embeddings} catalog embeddings, found {len(catalog)}"
+            )
+        image_validation = bundle.validate_image_catalog(image_resolver)
+        reranker = bundle.load_frozen_v5_reranker(
+            device=device,
+            batch_size=int(config.get("rerank_batch_size", 256)),
+        )
+        pipeline = cls(
+            catalog=catalog,
+            reranker=reranker,
+            metadata=metadata,
+            image_resolver=image_resolver,
+            image_url_base=str(config.get("image_url_base", "/recommendation/images")),
+            top_k_problematic=int(config.get("top_k_problematic", 200)),
+            top_k_context=int(config.get("top_k_context", 200)),
+            final_k=int(config.get("final_k", 3)),
+            trace_writer=CandidateTraceWriter(),
+        )
+        pipeline.artifact_bundle = bundle
+        pipeline.image_validation = image_validation
+        return pipeline
+
     @classmethod
     def load_from_archives(
         cls,
@@ -105,57 +160,64 @@ class RecommendationPipeline:
         from .zip_artifacts import FROZEN_V5_ENTRY, MLFinalZipBundle
         from .zip_images import ZipImageResolver
 
-        source = Path(config_path).resolve()
-        config = json.loads(source.read_text(encoding="utf-8"))
-        if not isinstance(config, dict):
-            raise ValueError("Recommendation config must be a JSON object")
-        if config.get("recommendation_version") != RECOMMENDATION_VERSION:
-            raise ValueError("Unsupported recommendation_version")
-        if config.get("scorer_version") != "type_aware_pairwise_v1":
-            raise ValueError("Recommendation V1 requires the frozen V5 scorer contract")
-        if config.get("embedding_version") != "fashionclip-512-l2-v1":
-            raise ValueError("Recommendation V1 requires FashionCLIP 512-D embeddings")
-        if config.get("category_mapping_version") != "core7-v2":
-            raise ValueError("Recommendation V1 requires Core-7 V2 categories")
-        if config.get("artifact_mode") != "zip-direct":
-            raise ValueError("Recommendation V1 requires artifact_mode='zip-direct'")
+        config = cls._load_config(config_path)
         if config.get("checkpoint_entry") != FROZEN_V5_ENTRY:
             raise ValueError("Recommendation config does not target frozen V5 in ZIP")
         if config.get("checkpoint_sha256") != FROZEN_V5_SHA256:
             raise ValueError("Recommendation config frozen V5 SHA-256 mismatch")
+
         bundle = MLFinalZipBundle(ml_zip_path)
         catalog = bundle.load_embedding_catalog()
-        expected_embeddings = int(config.get("expected_embedding_count", 142_480))
-        if len(catalog) != expected_embeddings:
-            raise ValueError(
-                f"Expected {expected_embeddings} catalog embeddings, found {len(catalog)}"
-            )
         metadata = bundle.load_metadata_index()
         image_resolver = ZipImageResolver(
             image_zip_paths,
             expected_count=int(config.get("expected_image_count", 142_480)),
         )
-        image_validation = bundle.validate_image_catalog(image_resolver)
-        reranker = bundle.load_frozen_v5_reranker(
-            device=device,
-            batch_size=int(config.get("rerank_batch_size", 256)),
-        )
-        pipeline = cls(
+        return cls._build(
+            config=config,
+            bundle=bundle,
             catalog=catalog,
-            reranker=reranker,
             metadata=metadata,
             image_resolver=image_resolver,
-            image_url_base=str(
-                config.get("image_url_base", "/recommendation/images")
-            ),
-            top_k_problematic=int(config.get("top_k_problematic", 200)),
-            top_k_context=int(config.get("top_k_context", 200)),
-            final_k=int(config.get("final_k", 3)),
-            trace_writer=CandidateTraceWriter(),
+            device=device,
         )
-        pipeline.artifact_bundle = bundle
-        pipeline.image_validation = image_validation
-        return pipeline
+
+    @classmethod
+    def load_from_directories(
+        cls,
+        config_path: Path | str,
+        *,
+        artifact_root: Path | str,
+        image_root: Path | str,
+        device: str | object = "cpu",
+    ) -> "RecommendationPipeline":
+        from .directory_artifacts import MLFinalDirectoryBundle
+        from .directory_images import DirectoryImageResolver
+        from .reranker import FROZEN_V5_SHA256
+
+        config = cls._load_config(config_path)
+        if config.get("checkpoint_sha256") != FROZEN_V5_SHA256:
+            raise ValueError("Recommendation config frozen V5 SHA-256 mismatch")
+
+        bundle = MLFinalDirectoryBundle(artifact_root)
+        catalog = bundle.load_embedding_catalog()
+        metadata = bundle.load_metadata_index()
+        # Important for very large mounted Drive folders: do not enumerate all
+        # image files. Declare the frozen embedding item inventory and resolve
+        # concrete image files lazily only when evaluation/runtime reads them.
+        image_resolver = DirectoryImageResolver(
+            image_root,
+            expected_count=int(config.get("expected_image_count", 142_480)),
+            known_item_ids=catalog.item_ids,
+        )
+        return cls._build(
+            config=config,
+            bundle=bundle,
+            catalog=catalog,
+            metadata=metadata,
+            image_resolver=image_resolver,
+            device=device,
+        )
 
     def recommend(
         self,
@@ -184,7 +246,8 @@ class RecommendationPipeline:
             if self.trace_writer is not None:
                 self.trace_writer.append(
                     candidate_trace_record(
-                        query_id=query_id or "runtime", source_split=source_split,
+                        query_id=query_id or "runtime",
+                        source_split=source_split,
                         problematic_item_index=problematic_index,
                         problematic_item_id=str(outfit_item_ids[problematic_index]),
                         ground_truth_item_id=ground_truth_item_id,
@@ -193,21 +256,28 @@ class RecommendationPipeline:
                         context_ids=[row.item_id for row in retrieval.context_hits],
                         hybrid_ids=[row.item_id for row in retrieval.candidates],
                         final_ids=[row.item_id for row in selected],
-                        candidate_counts={"item_retrieval": retrieval.problematic_hit_count,
-                                          "context_retrieval": retrieval.context_hit_count,
-                                          "hybrid_top200": min(200, len(retrieval.candidates)),
-                                          "reranked": len(reranked), "final": len(selected)},
-                        excluded_counts={"master_category": retrieval.master_category_filtered_count,
-                                         "missing_metadata": retrieval.missing_metadata_count,
-                                         "missing_image": retrieval.missing_image_count,
-                                         "missing_embedding": retrieval.missing_embedding_count},
+                        candidate_counts={
+                            "category_pool": retrieval.category_pool_count,
+                            "item_retrieval": retrieval.problematic_hit_count,
+                            "context_retrieval": retrieval.context_hit_count,
+                            "hybrid_top200": min(200, len(retrieval.candidates)),
+                            "reranked": len(reranked),
+                            "final": len(selected),
+                        },
+                        excluded_counts={
+                            "master_category": retrieval.master_category_filtered_count,
+                            "missing_metadata": retrieval.missing_metadata_count,
+                            "missing_image": retrieval.missing_image_count,
+                            "missing_embedding": retrieval.missing_embedding_count,
+                        },
                         failure_reason="fewer_than_three_final_candidates",
                     )
                 )
             raise RuntimeError(
                 f"Only {len(selected)} eligible candidates remain; "
-                f"Recommendation V1 requires Top-{self.final_k}"
+                f"Recommendation V2 requires Top-{self.final_k}"
             )
+
         items = []
         for rank, candidate in enumerate(selected, start=1):
             master_category = self.metadata.master_category(candidate.item_id)
@@ -226,6 +296,7 @@ class RecommendationPipeline:
                     coarse_category=coarse_category,
                 )
             )
+
         if self.trace_writer is not None:
             self.trace_writer.append(
                 candidate_trace_record(
@@ -240,6 +311,7 @@ class RecommendationPipeline:
                     hybrid_ids=[row.item_id for row in retrieval.candidates],
                     final_ids=[row.item_id for row in selected],
                     candidate_counts={
+                        "category_pool": retrieval.category_pool_count,
                         "item_retrieval": retrieval.problematic_hit_count,
                         "context_retrieval": retrieval.context_hit_count,
                         "hybrid_top200": min(200, len(retrieval.candidates)),
@@ -272,16 +344,12 @@ class RecommendationPipeline:
         outfit_category_ids: Sequence[int],
         problematic_index: int,
     ) -> tuple[RetrievalResult, list[RerankedCandidate]]:
-        """Return internal retrieval/reranking objects for evaluation."""
-
         if len(outfit_item_ids) != len(outfit_category_ids):
             raise ValueError("outfit item IDs and category IDs must align")
         if not 0 <= problematic_index < len(outfit_item_ids):
             raise ValueError("problematic_index is outside the outfit")
         target_category = int(outfit_category_ids[problematic_index])
-        target_master = self.metadata.master_category(
-            str(outfit_item_ids[problematic_index])
-        )
+        target_master = self.metadata.master_category(str(outfit_item_ids[problematic_index]))
         retrieval = self.retriever.retrieve(
             outfit_item_ids=outfit_item_ids,
             outfit_embeddings=outfit_embeddings,
@@ -297,9 +365,7 @@ class RecommendationPipeline:
             problematic_index=problematic_index,
             candidate_item_ids=candidate_ids,
             candidate_embeddings=candidate_embeddings,
-            candidate_category_ids=[
-                candidate.category_id for candidate in retrieval.candidates
-            ],
+            candidate_category_ids=[candidate.category_id for candidate in retrieval.candidates],
         )
         return retrieval, reranked
 
@@ -310,8 +376,6 @@ class RecommendationPipeline:
         outfit_embeddings,
         outfit_category_ids: Sequence[int],
     ) -> RecommendationResult:
-        """Use the existing authoritative LOO pipeline, then recommend."""
-
         if torch is None:
             raise RuntimeError("PyTorch is required for LOO recommendation")
         diagnosis = diagnose_outfit(
@@ -342,21 +406,20 @@ class RecommendationPipeline:
                 None if loo_result is None else loo_result.get("protocol_version")
             ),
             "retrieval": {
+                "retrieval_scope": retrieval.retrieval_scope,
+                "used_core7_fallback": retrieval.used_core7_fallback,
+                "target_master_category": retrieval.target_master_category,
+                "target_category_id": retrieval.target_category_id,
+                "category_pool_count": retrieval.category_pool_count,
                 "problematic_hit_count": retrieval.problematic_hit_count,
                 "context_hit_count": retrieval.context_hit_count,
                 "union_count": retrieval.union_count,
-                "master_category_filtered_count": (
-                    retrieval.master_category_filtered_count
-                ),
+                "master_category_filtered_count": retrieval.master_category_filtered_count,
                 "missing_metadata_count": retrieval.missing_metadata_count,
                 "missing_image_count": retrieval.missing_image_count,
                 "missing_embedding_count": retrieval.missing_embedding_count,
             },
-            "catalog": (
-                self.catalog.status.to_dict()
-                if hasattr(self.catalog, "status")
-                else None
-            ),
+            "catalog": self.catalog.status.to_dict() if hasattr(self.catalog, "status") else None,
             "reranked_candidates": [
                 {
                     "item_id": row.item_id,
