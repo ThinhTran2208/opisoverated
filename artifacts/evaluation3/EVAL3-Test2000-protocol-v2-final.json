@@ -1,0 +1,224 @@
+{
+  "evaluation_dataset": "EVALUATION3",
+  "evaluation_split_name": "EVAL3-Test2000-Full",
+  "evaluation_subsets": {
+    "full": {
+      "count": 2000,
+      "membership_column": "subset_full",
+      "name": "EVAL3-Test2000-Full"
+    },
+    "nesting": "422 subset_of 609 subset_of 2000",
+    "no_full_image_overlap": {
+      "count": 422,
+      "membership_column": "subset_no_full_image_overlap",
+      "name": "EVAL3-Test2000-No-Full-Image-Overlap-Candidate"
+    },
+    "no_trainvalid_image_overlap": {
+      "count": 609,
+      "membership_column": "subset_no_trainvalid_image_overlap",
+      "name": "EVAL3-Test2000-No-TrainValid-Image-Overlap-Candidate"
+    }
+  },
+  "expected_test_count": 2000,
+  "fashionclip": {
+    "embedding_dimension": 512,
+    "embedding_dtype": "float32",
+    "embedding_version": "fashionclip-512-l2-v1",
+    "fine_tuning_on_evaluation3": false,
+    "model_name": "patrickjohncyh/fashion-clip",
+    "normalization": "L2",
+    "preprocessing_version": "fashionclip-hf-clipprocessor-rgb-v1"
+  },
+  "frozen_artifacts": {
+    "evaluation_manifest": {
+      "file_name": "EVAL3-Test2000-evaluation-manifest-2000-clean.csv",
+      "membership_counts": {
+        "subset_full": 2000,
+        "subset_no_full_image_overlap": 422,
+        "subset_no_trainvalid_image_overlap": 609
+      },
+      "row_count": 2000,
+      "sha256": "1a45f6dc77f11eb57cb9d4e0ff2f10a26686f0f6d131bbc134dda40de9e7a76d"
+    },
+    "protocol_markdown": {
+      "file_name": "EVALUATION3_EXTERNAL_EVALUATION_V2_VI.md",
+      "sha256": "cd9f44a109201f010ecd0bcd33a7a5655301346e3c427ff7b3804b5dd6d757bf"
+    }
+  },
+  "human_labels": {
+    "human_ordinal_derivation": "human_ordinal_quality = 4 - Cmt",
+    "metric_ordinal_mapping": {
+      "Bad": 1,
+      "Good": 3,
+      "Normal": 2
+    },
+    "original_cmt_mapping": {
+      "Bad": 3,
+      "Good": 1,
+      "Normal": 2
+    }
+  },
+  "metrics": {
+    "bootstrap_policy": {
+      "ci_level": 0.95,
+      "ci_method": "percentile",
+      "resamples": 10000,
+      "seed": 42,
+      "unit": "outfit"
+    },
+    "classwise_logit_summary_policy": {
+      "classes": [
+        "Bad",
+        "Normal",
+        "Good"
+      ],
+      "optional_statistics": [
+        "mean",
+        "standard_deviation"
+      ],
+      "required_statistics": [
+        "N",
+        "median",
+        "Q1",
+        "Q3",
+        "IQR"
+      ]
+    },
+    "excluded_confirmatory_metrics": [
+      "ROC-AUC",
+      "accuracy",
+      "F1",
+      "3-class accuracy",
+      "threshold-based metrics",
+      "calibrated 0-100 score metrics"
+    ],
+    "metric_inputs": [
+      "compatibility_logit",
+      "human_ordinal_quality"
+    ],
+    "pairwise_ordering_policy": {
+      "diagnostics": [
+        "P(logit_Good > logit_Bad)",
+        "P(logit_Good > logit_Normal)",
+        "P(logit_Normal > logit_Bad)"
+      ],
+      "exact_logit_tie_contribution": 0.5
+    },
+    "primary_metric": "Kendall tau-b",
+    "required_counts": [
+      "N_total",
+      "N_Bad",
+      "N_Normal",
+      "N_Good"
+    ],
+    "secondary_metric": "Spearman rho"
+  },
+  "overlap_audit": {
+    "early_stop_rule": {
+      "auto_duplicate_applied_before_manual": true,
+      "duplicate_in_test_after_train_valid_clean": "mark FULL image overlap and stop remaining TEST review",
+      "duplicate_in_train_valid": "mark TRAIN_VALID image overlap and stop outfit"
+    },
+    "exact_phash_bands": [
+      0,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14
+    ],
+    "image_overlap_positive_labels": [
+      "DUPLICATE"
+    ],
+    "manual_band_selection_rule": "one maximum-SSIM candidate per exact pHash band within each reference scope",
+    "manual_overlap_labels": [
+      "DUPLICATE",
+      "SAME_PRODUCT_DIFFERENT_IMAGE",
+      "NON_DUPLICATE",
+      "UNCERTAIN",
+      "SKIP"
+    ],
+    "manual_review_order_rule": {
+      "phase_order": [
+        "TRAIN_VALID",
+        "TEST"
+      ],
+      "primary_sort": "SSIM descending",
+      "ssim_rounding": false,
+      "tie_break": "pHash distance ascending only for exact SSIM ties"
+    },
+    "phash_threshold": 14,
+    "reference_scopes": {
+      "FULL": [
+        "train",
+        "valid",
+        "test"
+      ],
+      "TRAIN_VALID": [
+        "train",
+        "valid"
+      ]
+    },
+    "same_product_different_image_policy": {
+      "counts_as_image_overlap": false,
+      "report_separately_as_product_overlap_diagnostic": true,
+      "triggers_early_stop": false
+    },
+    "skip_policy": "unresolved",
+    "ssim_auto_threshold": 0.92,
+    "uncertain_policy": "unresolved"
+  },
+  "policies": {
+    "calibration_policy": "not used",
+    "detection_policy": "RF-DETR not used",
+    "evaluation3_fine_tuning": "not allowed",
+    "reason_missing_policy": "preserve blank; do not impute"
+  },
+  "protocol_status": "FROZEN",
+  "protocol_version": "EVALUATION3_EXTERNAL_EVALUATION_V2",
+  "reporting_roles": {
+    "diagnostic_subset": "EVAL3-Test2000-Full",
+    "primary_subset": "EVAL3-Test2000-No-Full-Image-Overlap-Candidate",
+    "secondary_subset": "EVAL3-Test2000-No-TrainValid-Image-Overlap-Candidate"
+  },
+  "role_mapping": {
+    "B": {
+      "category": "BOTTOM",
+      "category_id": 2
+    },
+    "G": {
+      "category": "BAG",
+      "category_id": 6
+    },
+    "S": {
+      "category": "SHOES",
+      "category_id": 5
+    },
+    "U": {
+      "category": "TOP",
+      "category_id": 1
+    }
+  },
+  "scorer": {
+    "checkpoint_best_valid_roc_auc": 0.6905082489625538,
+    "checkpoint_epoch": 52,
+    "checkpoint_sha256": "7b3d0b6e0d44e3de517565f5725ded198bbc762b02a4dece26a58ee145cfed9c",
+    "evaluation_inference_code_commit": "d99fda52fc0b7c0f78590b953ce63352fe2c2954",
+    "higher_logit_means": "more compatible",
+    "output": "compatibility_logit",
+    "scorer_training_code_commit": "7cbbb19fd89352b7ef54038e57b4d8208b7ee1f6",
+    "scorer_version": "type_aware_pairwise_v1"
+  },
+  "split_reconstruction_rule": "last 2,000 EVALUATION3 workbook data rows",
+  "subset_definitions": {
+    "TH1": "TRAIN or VALID image overlap",
+    "TH2": "no TRAIN/VALID image overlap, TEST-only image overlap, unresolved=false",
+    "TH3": "no known TRAIN/VALID/TEST image overlap, unresolved=false"
+  },
+  "test_data_row_end_inclusive": 34478,
+  "test_data_row_start": 32479,
+  "test_outfit_id_end": "200519203000",
+  "test_outfit_id_start": "200519201001"
+}
