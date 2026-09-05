@@ -100,9 +100,22 @@ class Evaluation3Tests(unittest.TestCase):
             self.assertEqual(report["retrieval"][stage]["recall_at_50"], 0.5)
             self.assertEqual(report["retrieval"][stage]["recall_at_100"], 0.5)
             self.assertEqual(report["retrieval"][stage]["recall_at_200"], 0.5)
-        self.assertEqual(report["reranking"]["hit_at_1"], 0.0)
-        self.assertEqual(report["reranking"]["hit_at_3"], 0.5)
-        self.assertEqual(report["reranking"]["mrr"], 0.25)
+
+        reranking = report["reranking"]
+        self.assertEqual(reranking["eligible_queries_gt_in_full_union"], 1)
+        self.assertEqual(reranking["rank_evaluable_queries"], 1)
+        self.assertEqual(reranking["full_union_gt_coverage"], 0.5)
+        self.assertEqual(reranking["gt_rank_improved_count"], 0)
+        self.assertEqual(reranking["gt_rank_unchanged_count"], 0)
+        self.assertEqual(reranking["gt_rank_worsened_count"], 1)
+        self.assertEqual(reranking["gt_rank_improved_rate"], 0.0)
+        self.assertEqual(reranking["gt_rank_unchanged_rate"], 0.0)
+        self.assertEqual(reranking["gt_rank_worsened_rate"], 1.0)
+        self.assertEqual(reranking["mean_rank_change_pre_minus_post"], -1.0)
+        self.assertEqual(reranking["median_rank_change_pre_minus_post"], -1.0)
+        self.assertEqual(reranking["conditional_mrr_before_scorer"], 1.0)
+        self.assertEqual(reranking["conditional_mrr_after_scorer"], 0.5)
+        self.assertEqual(reranking["conditional_mrr_gain"], -0.5)
 
     def test_trace_order_schema_and_excluded_query(self):
         records = [{
