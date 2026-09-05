@@ -22,7 +22,7 @@ class GarmentPreprocessor(Protocol):
 
 @runtime_checkable
 class ExplanationProvider(Protocol):
-    """Explain the authoritative LOO result using garment crops as visual evidence."""
+    """Explain the authoritative LOO result using full-image and crop evidence."""
 
     def explain(
         self,
@@ -79,6 +79,8 @@ class DetectionAdapter:
         result, original_image = self.pipeline.run(image)
         temporary_dir = tempfile.TemporaryDirectory(prefix="outfit-inference-")
         try:
+            original_image_ref = Path(temporary_dir.name) / "original-outfit.png"
+            original_image.save(original_image_ref, format="PNG")
             crop_refs: list[Path] = []
             garments: list[dict[str, object]] = []
             embeddings = []
@@ -125,6 +127,7 @@ class DetectionAdapter:
                 categories=stacked_categories,
                 crop_image_refs=crop_refs,
                 original_image=original_image,
+                original_image_ref=original_image_ref,
                 metadata={
                     "detection": result.metadata_dict(),
                 },
@@ -267,9 +270,10 @@ class RemoteVLMAdapterV2:
     """Remote adapter for score-free VLM Explanation V2.
 
     The core builds and validates the complete evidence object, then materializes
-    the three authoritative catalog images into a request-scoped temporary
-    directory. The VLM service receives only those temporary image bytes and the
-    validated evidence; it never needs the recommendation catalog filesystem.
+    the original outfit image and three authoritative catalog images into
+    request-scoped temporary files. The VLM service receives only those image
+    bytes and the validated evidence; it never needs the recommendation catalog
+    filesystem.
     """
 
     def __init__(
@@ -309,6 +313,7 @@ class RemoteVLMAdapterV2:
         *,
         sample_id: str,
         recommendation_result: object,
+        original_image_ref: str | Path | None = None,
     ) -> object:
         if len(crop_image_refs) != len(garments):
             raise ValueError("RemoteVLMAdapterV2 requires one crop ref per garment")
@@ -362,6 +367,8 @@ class RemoteVLMAdapterV2:
                     for item_id, path in recommendation_refs.items()
                 },
             }
+            if original_image_ref is not None:
+                payload["original_image"] = self._encode_path(Path(original_image_ref))
 
             try:
                 import httpx

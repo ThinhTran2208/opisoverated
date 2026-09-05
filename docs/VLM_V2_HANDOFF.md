@@ -12,7 +12,7 @@ full internal vlm-evidence-v2
         ↓
 score-free vlm-prompt-context-v2
         +
-original garment crops + Top-3 candidate images
+full original outfit image + original garment crops + Top-3 candidate images
         ↓
 Qwen3-VL closed-taxonomy visual evidence
         ↓
@@ -25,8 +25,9 @@ score-free integration handoff
 vlm-user-facing-v2
 ```
 
-The optional full original outfit image is not part of this baseline. It remains
-a future ablation.
+The full original outfit image is sent when available. It supplies whole-outfit
+composition and layering context; positional crops remain the authoritative
+item-level visual bindings.
 
 ## Decision authority vs visual evidence
 

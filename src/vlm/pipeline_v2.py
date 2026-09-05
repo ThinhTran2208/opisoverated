@@ -672,6 +672,7 @@ class VLMExplanationPipelineV2:
         recommendation_image_refs: Mapping[str, str | Path],
         *,
         must_exist: bool = True,
+        original_image_ref: str | Path | None = None,
     ) -> dict:
         """Run Qwen -> validator -> internal + score-free public renderers."""
 
@@ -684,6 +685,7 @@ class VLMExplanationPipelineV2:
             min_pixels=int(vision["min_pixels"]),
             max_pixels=int(vision["max_pixels"]),
             must_exist=must_exist,
+            original_image_ref=original_image_ref,
         )
         generation = dict(self.config["generation"])
         max_retries = int(generation.pop("max_validation_retries"))

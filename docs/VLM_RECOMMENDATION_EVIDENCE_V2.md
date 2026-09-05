@@ -135,6 +135,7 @@ With this evidence contract frozen, the next VLM V2 step is:
 
 ```text
 vlm-evidence-v2
++ full original outfit image (when available)
 + original garment crop images
 + Top-3 candidate images
         ↓
@@ -145,5 +146,6 @@ strict validator
 deterministic Vietnamese renderer
 ```
 
-The optional full original outfit image remains outside this baseline contract
-and can be tested later as a separate ablation branch.
+The full original outfit image is used for whole-outfit context. Crops remain
+positional for exact item binding, and candidate images remain keyed by
+authoritative item ID.

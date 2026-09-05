@@ -1,4 +1,4 @@
-# VLM Prompt V2 — crop-only baseline with Recommendation Top-3
+# VLM Prompt V2 — full outfit context with Recommendation Top-3
 
 ## Scope
 
@@ -13,6 +13,7 @@ full vlm-evidence-v2
 build_prompt_context_v2(...)
         ↓
 score-free vlm-prompt-context-v2
++ full original outfit image when available
 + one crop per original outfit item
 + exactly three authoritative recommendation images
         ↓
@@ -23,8 +24,9 @@ deterministic validator
 internal renderer + score-free handoff + user-facing renderer
 ```
 
-The full original outfit image is intentionally outside this baseline and can be
-studied later as a separate ablation.
+The full original outfit image is the first visual input when available. Qwen
+uses it for overall composition, color balance, silhouette, and layering; the
+following crops keep each `item_index` bound to the correct garment.
 
 ## Image binding
 

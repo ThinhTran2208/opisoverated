@@ -226,6 +226,7 @@ def create_app(
 
         sample_id = payload.get("sample_id")
         evidence = payload.get("evidence")
+        original_image = payload.get("original_image")
         outfit_images = payload.get("outfit_images")
         recommendation_images = payload.get("recommendation_images")
         if not isinstance(sample_id, str) or not sample_id.strip():
@@ -269,8 +270,17 @@ def create_app(
         try:
             with tempfile.TemporaryDirectory(prefix="vlm-v2-images-") as directory:
                 root = Path(directory)
+                original_image_ref = None
+                image_index = 0
+                if original_image is not None:
+                    original_image_ref = _decode_crop(
+                        original_image,
+                        index=image_index,
+                        directory=root,
+                    )
+                    image_index += 1
                 outfit_refs = [
-                    _decode_crop(value, index=index, directory=root)
+                    _decode_crop(value, index=image_index + index, directory=root)
                     for index, value in enumerate(outfit_images)
                 ]
                 recommendation_refs: dict[str, Path] = {}
@@ -278,14 +288,19 @@ def create_app(
                     if not isinstance(item_id, str) or not item_id.strip():
                         raise ValueError("recommendation image keys must be non-empty strings")
                     recommendation_refs[item_id] = _decode_crop(
-                        value, index=len(outfit_refs) + index, directory=root
+                        value,
+                        index=image_index + len(outfit_refs) + index,
+                        directory=root,
                     )
 
+                explain_kwargs = {"must_exist": True}
+                if original_image_ref is not None:
+                    explain_kwargs["original_image_ref"] = original_image_ref
                 run = vlm_runtime_v2.get_adapter().explain(
                     evidence,
                     outfit_refs,
                     recommendation_refs,
-                    must_exist=True,
+                    **explain_kwargs,
                 )
         except (TypeError, ValueError, FileNotFoundError) as error:
             return JSONResponse(

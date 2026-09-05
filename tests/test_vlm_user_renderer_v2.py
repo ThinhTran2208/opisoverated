@@ -158,7 +158,12 @@ class VlmUserRendererV2Tests(unittest.TestCase):
         self.assertEqual(rendered["schema_version"], USER_FACING_SCHEMA_VERSION_V2)
         self.assertEqual(
             rendered["problematic_item"],
-            {"item_index": 3, "item_id": "bag-current", "category": "túi"},
+            {
+                "item_index": 3,
+                "item_id": "bag-current",
+                "category": "túi",
+                "reason": "Món này được ưu tiên thay để tổng thể outfit cân đối hơn.",
+            },
         )
         self.assertNotIn("chiếc túi hiện tại là món được ưu tiên thay", rendered["text"])
         self.assertIn("Ba mẫu túi", rendered["summary"])
@@ -198,6 +203,7 @@ class VlmUserRendererV2Tests(unittest.TestCase):
                 rendered["text"],
                 rendered["summary"],
                 rendered["caution"],
+                rendered["problematic_item"]["reason"],
                 *[row["headline"] for row in rendered["recommendations"]],
                 *[row["reason"] for row in rendered["recommendations"]],
             ]
@@ -211,6 +217,7 @@ class VlmUserRendererV2Tests(unittest.TestCase):
             [
                 rendered["text"],
                 rendered["summary"],
+                rendered["problematic_item"]["reason"],
                 *[row["reason"] for row in rendered["recommendations"]],
             ]
         ).lower()

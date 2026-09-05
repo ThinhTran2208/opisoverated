@@ -22,9 +22,11 @@
       .preview { width: 100%; height: 290px; object-fit: contain; border-radius: 12px; background: #0c0f0e; display: none; }
       .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 18px; align-items: center; }
       button { border: 0; border-radius: 999px; background: var(--accent); color: #14200f; font-weight: 800; padding: 12px 18px; cursor: pointer; } button:disabled { opacity: .45; cursor: wait; } button.secondary { background: #29332f; color: #f4f7f2; }
+      .score-toggle { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; cursor: pointer; } .score-toggle input { accent-color: var(--accent); width: 16px; height: 16px; }
       .status { min-height: 24px; color: var(--muted); } .status.error { color: var(--danger); }
       .results { margin-top: 22px; display: none; } .result-grid { display: grid; grid-template-columns: minmax(230px, .8fr) 1.2fr; gap: 22px; }
       .callout { background: #202b22; border: 1px solid #526b4c; border-radius: 16px; padding: 18px; } .callout p:last-child { margin-bottom: 0; }
+      .score-panel { margin-top: 22px; display: flex; align-items: baseline; gap: 10px; } .score-panel strong { color: var(--accent-2); font-size: 34px; line-height: 1; } .score-panel small { color: var(--muted); }
       .label { color: var(--accent); font-size: 12px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
       .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 14px; } .card { overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: #121716; } .card img { width: 100%; aspect-ratio: 1; object-fit: cover; background: #202624; } .card-body { padding: 13px; } .rank { color: var(--accent); font-weight: 800; } .card p { color: var(--muted); font-size: 14px; margin-bottom: 0; }
       footer { margin-top: 18px; color: #73817a; font-size: 13px; }
@@ -41,27 +43,29 @@
       <section class="panel">
         <div class="upload">
           <label class="drop" id="drop"><input id="file" type="file" accept="image/*" /><div id="dropText"><strong>Chọn hoặc kéo ảnh vào đây</strong><span class="hint">JPG, PNG · tối đa 10 MB</span></div><img id="preview" class="preview" alt="Ảnh outfit xem trước" /></label>
-          <div><h2>Phân tích outfit</h2><p class="hint">Request đầu tiên có thể lâu hơn vì model cần khởi động. Trong lúc xử lý, giữ nguyên trang này.</p><div class="actions"><button id="analyze" disabled>Analyze outfit</button><button id="clear" class="secondary" type="button">Xóa ảnh</button></div><p id="status" class="status" aria-live="polite"></p></div>
+          <div><h2>Phân tích outfit</h2><p class="hint">Request đầu tiên có thể lâu hơn vì model cần khởi động. Trong lúc xử lý, giữ nguyên trang này.</p><div class="actions"><button id="analyze" disabled>Analyze outfit</button><button id="clear" class="secondary" type="button">Xóa ảnh</button></div><label class="score-toggle"><input id="showScore" type="checkbox" /> Hiện compatibility score</label><p id="status" class="status" aria-live="polite"></p></div>
         </div>
       </section>
 
       <section id="results" class="panel results" aria-live="polite">
-        <div class="result-grid"><div><div class="label">Món nên thay</div><div class="callout"><h2 id="problemCategory">—</h2></div></div><div><div class="label">Top 3 lựa chọn</div><div id="cards" class="cards"></div></div></div>
-        <div class="callout" style="margin-top:22px"><div class="label">Nhận xét</div><p id="explanation">—</p></div>
+        <div class="result-grid"><div><div class="label">Món nên thay</div><div class="callout"><h2 id="problemCategory">—</h2><p id="problemReason">—</p></div></div><div><div class="label">Top 3 lựa chọn</div><div id="cards" class="cards"></div></div></div>
+        <div id="scorePanel" class="score-panel" hidden><div class="label">Compatibility score</div><strong id="compatibilityScore">—</strong><small>Điểm tương thích do model ước lượng; không phải phần trăm “đẹp” khách quan.</small></div>
       </section>
       <footer>Demo backend chạy trên Vast.ai · Không lưu ảnh upload trong frontend.</footer>
     </main>
     <script>
-      const fileInput = document.querySelector('#file'), drop = document.querySelector('#drop'), preview = document.querySelector('#preview'), dropText = document.querySelector('#dropText'), analyze = document.querySelector('#analyze'), clear = document.querySelector('#clear'), status = document.querySelector('#status'), results = document.querySelector('#results');
-      let selectedFile = null;
+      const fileInput = document.querySelector('#file'), drop = document.querySelector('#drop'), preview = document.querySelector('#preview'), dropText = document.querySelector('#dropText'), analyze = document.querySelector('#analyze'), clear = document.querySelector('#clear'), status = document.querySelector('#status'), results = document.querySelector('#results'), showScore = document.querySelector('#showScore'), scorePanel = document.querySelector('#scorePanel'), compatibilityScore = document.querySelector('#compatibilityScore');
+      let selectedFile = null, latestPayload = null;
       const text = (value, fallback = '—') => value == null || value === '' ? fallback : String(value);
+      function updateScore(payload = latestPayload) { const value = Number(payload?.compatibility?.compatibility_score); const visible = showScore.checked && Number.isFinite(value); scorePanel.hidden = !visible; if (visible) compatibilityScore.textContent = `${Math.round(value)}/100`; }
       function setFile(file) { if (!file || !file.type.startsWith('image/')) { setStatus('Vui lòng chọn một file ảnh.', true); return; } selectedFile = file; preview.src = URL.createObjectURL(file); preview.style.display = 'block'; dropText.style.display = 'none'; analyze.disabled = false; setStatus('Ảnh đã sẵn sàng.'); results.style.display = 'none'; }
       function setStatus(message, error = false) { status.textContent = message; status.className = error ? 'status error' : 'status'; }
       fileInput.addEventListener('change', () => setFile(fileInput.files[0]));
       ['dragenter', 'dragover'].forEach(event => drop.addEventListener(event, e => { e.preventDefault(); drop.classList.add('drag'); }));
       ['dragleave', 'drop'].forEach(event => drop.addEventListener(event, e => { e.preventDefault(); drop.classList.remove('drag'); }));
       drop.addEventListener('drop', e => setFile(e.dataTransfer.files[0]));
-      clear.addEventListener('click', () => { selectedFile = null; fileInput.value = ''; preview.removeAttribute('src'); preview.style.display = 'none'; dropText.style.display = 'block'; analyze.disabled = true; results.style.display = 'none'; setStatus(''); });
+      showScore.addEventListener('change', () => updateScore());
+      clear.addEventListener('click', () => { selectedFile = null; latestPayload = null; fileInput.value = ''; preview.removeAttribute('src'); preview.style.display = 'none'; dropText.style.display = 'block'; analyze.disabled = true; results.style.display = 'none'; updateScore(); setStatus(''); });
       analyze.addEventListener('click', async () => {
         if (!selectedFile) return; analyze.disabled = true; setStatus('Đang phân tích… lần đầu có thể mất vài phút.');
         const body = new FormData(); body.append('image', selectedFile);
@@ -76,12 +80,14 @@
         } catch (error) { setStatus(error.message, true); } finally { analyze.disabled = false; }
       });
       function render(payload) {
+        latestPayload = payload;
         const problem = payload.explanation?.problematic_item || {};
         document.querySelector('#problemCategory').textContent = text(problem.category);
-        document.querySelector('#explanation').textContent = text(payload.explanation?.text);
+        document.querySelector('#problemReason').textContent = text(problem.reason);
         const items = payload.recommendation?.items || payload.explanation?.recommendations || [];
         const cards = document.querySelector('#cards'); cards.replaceChildren();
         items.slice(0, 3).forEach((item, index) => { const card = document.createElement('article'); card.className = 'card'; const image = document.createElement('img'); image.alt = text(item.display_name, `Gợi ý ${index + 1}`); if (item.image_url) image.src = item.image_url; const body = document.createElement('div'); body.className = 'card-body'; const rank = document.createElement('div'); rank.className = 'rank'; rank.textContent = `#${text(item.rank, index + 1)}`; const name = document.createElement('strong'); name.textContent = text(item.display_name || item.master_category, `Gợi ý ${index + 1}`); const reason = document.createElement('p'); reason.textContent = text(item.reason); body.append(rank, name, reason); card.append(image, body); cards.append(card); });
+        updateScore(payload);
         results.style.display = 'block'; results.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
     </script>

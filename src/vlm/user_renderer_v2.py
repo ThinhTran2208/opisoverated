@@ -174,6 +174,18 @@ def render_user_facing_vi_v2(
     problem_coarse = str(diagnosis["problematic_category"])
     problem_category = CATEGORY_LABELS_VI[problem_coarse]
     current_item_inline = _CURRENT_ITEM_LABEL_VI[problem_coarse]
+    category_by_index = {
+        int(row["item_index"]): str(row["coarse_category"])
+        for row in normalized_evidence["items"]
+    }
+    diagnosis_reason = _diagnosis_support_reason(
+        normalized_analysis["diagnosis"],
+        problem_index=problem_index,
+        category_by_index=category_by_index,
+    )
+    problematic_reason = diagnosis_reason or (
+        "Món này được ưu tiên thay để tổng thể outfit cân đối hơn."
+    )
     authoritative_candidates = normalized_evidence["recommendation"]["items"]
     all_improve = all(
         float(row["improvement_logit"]) > 0 for row in authoritative_candidates
@@ -248,6 +260,7 @@ def render_user_facing_vi_v2(
             "item_index": problem_index,
             "item_id": problem_id,
             "category": problem_category,
+            "reason": problematic_reason,
         },
         "summary": summary,
         "recommendations": recommendations,

@@ -306,6 +306,7 @@ Qwen may not derive a visual label from rank.
 
 For an outfit with `N` original items, Qwen receives:
 
+- one full original outfit image when available;
 - exactly `N` original garment crop images;
 - exactly three Recommendation V2 candidate images.
 
@@ -320,6 +321,10 @@ wrong candidate ID      → hard failure
 ```
 
 Recommendation image binding is by ID, not by an assumed list position.
+
+The full original image is context only: it helps Qwen inspect composition,
+layering, color balance, silhouette, and overall style. It does not change the
+authoritative problematic item or candidate ranking.
 
 The original problematic item remains among the original outfit crops. Candidate visual observations must compare each candidate against the **remaining original context**, excluding the problematic original item.
 

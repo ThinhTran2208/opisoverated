@@ -1,7 +1,9 @@
 """Tests for VLM V2 image binding and constrained Qwen prompt."""
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from src.vlm.prompt_v2 import (
     PROMPT_CONTEXT_SCHEMA_VERSION_V2,
@@ -178,6 +180,28 @@ class VlmPromptV2Tests(unittest.TestCase):
                 "https://example.com/c.jpg",
             ],
         )
+
+    def test_binds_full_original_outfit_image_before_item_crops(self):
+        evidence = evidence_fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            original_ref = Path(directory) / "original-outfit.png"
+            original_ref.write_bytes(b"fake-image")
+            messages = build_qwen_messages_v2(
+                evidence,
+                [f"https://example.com/outfit-{index}.jpg" for index in range(4)],
+                recommendation_images(),
+                min_pixels=262144,
+                max_pixels=262144,
+                must_exist=False,
+                original_image_ref=original_ref,
+            )
+
+        user_content = messages[1]["content"]
+        image_rows = [row for row in user_content if row["type"] == "image"]
+        text = "\n".join(row["text"] for row in user_content if row["type"] == "text")
+        self.assertEqual(len(image_rows), 8)
+        self.assertIn("VISUAL INPUT GROUP: FULL ORIGINAL OUTFIT IMAGE", text)
+        self.assertEqual(image_rows[0]["image"], original_ref.as_uri())
 
     def test_prompt_context_projects_out_all_raw_score_keys(self):
         context = build_prompt_context_v2(evidence_fixture())

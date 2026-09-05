@@ -19,6 +19,9 @@ class _FakeCrop:
 
 
 class _FakeImage:
+    def save(self, path, format=None):
+        Path(path).write_bytes(b"fake-original-image")
+
     def crop(self, box):
         return _FakeCrop()
 
@@ -68,8 +71,11 @@ class InferenceAdapterTests(unittest.TestCase):
         self.assertEqual(context.categories.tolist(), category_ids)
         self.assertEqual(context.coarse_categories, names)
         self.assertTrue(all(path.is_file() for path in crop_refs))
+        original_ref = Path(context.original_image_ref)
+        self.assertTrue(original_ref.is_file())
         context.close()
         self.assertTrue(all(not path.exists() for path in crop_refs))
+        self.assertFalse(original_ref.exists())
 
     def test_vlm_adapter_receives_raw_loo_and_builds_vlm_evidence(self):
         captured = {}

@@ -487,6 +487,7 @@ class ProductionInferencePipeline:
                     context.crop_image_refs,
                     sample_id=context.request_id,
                     recommendation_result=recommendation_result,
+                    original_image_ref=context.original_image_ref,
                 )
             else:
                 response["explanation"] = self.vlm_adapter.explain(

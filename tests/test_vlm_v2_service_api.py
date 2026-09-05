@@ -50,6 +50,7 @@ class VLMV2ServiceAPITests(unittest.TestCase):
                 recommendation_image_refs,
                 *,
                 must_exist,
+                original_image_ref=None,
             ):
                 captured["evidence"] = evidence
                 captured["outfit_exists"] = [
@@ -60,6 +61,10 @@ class VLMV2ServiceAPITests(unittest.TestCase):
                     for key, value in recommendation_image_refs.items()
                 }
                 captured["must_exist"] = must_exist
+                captured["original_exists"] = (
+                    original_image_ref is not None
+                    and Path(original_image_ref).is_file()
+                )
                 return {"user_facing": {"schema_version": "vlm-user-facing-v2"}}
 
         class FakeRuntime:
@@ -77,6 +82,10 @@ class VLMV2ServiceAPITests(unittest.TestCase):
             json={
                 "sample_id": "sample-v2-1",
                 "evidence": {"schema_version": "vlm-evidence-v2"},
+                "original_image": {
+                    "filename": "original-outfit.png",
+                    "base64": encoded,
+                },
                 "outfit_images": [
                     {"filename": "garment-0.png", "base64": encoded},
                     {"filename": "garment-1.png", "base64": encoded},
@@ -99,6 +108,7 @@ class VLMV2ServiceAPITests(unittest.TestCase):
             {"item-a": True, "item-b": True, "item-c": True},
         )
         self.assertTrue(captured["must_exist"])
+        self.assertTrue(captured["original_exists"])
 
     def test_v2_service_keeps_unexpected_failures_json_shaped(self):
         from fastapi.testclient import TestClient

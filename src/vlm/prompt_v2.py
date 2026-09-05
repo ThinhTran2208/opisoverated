@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """Constrained Qwen3-VL prompt for diagnosis + Recommendation V2 explanation.
 
-Baseline V2 visual input intentionally contains only:
+V2 visual input contains:
+- the full original outfit image when available;
 - one crop image for each original outfit item; and
 - exactly one image for each authoritative Top-3 recommendation candidate.
 
-The optional full original outfit image is deliberately outside this contract so
-it can be evaluated later as a separate ablation without changing the baseline.
-Raw scorer/LOO/recommendation scores remain internal and are projected out before
-prompt construction.
+The full image supplies whole-outfit context while the crops preserve precise
+item-level binding. Raw scorer/LOO/recommendation scores remain internal and are
+projected out before prompt construction.
 """
 
 from __future__ import annotations
@@ -81,8 +81,10 @@ Hard rules:
 3. Return no natural-language prose. Every generated string other than copied
    item_ids must be one of the explicitly allowed enum or schema tokens.
 4. Use only visible color, pattern, silhouette, formality, and style relations.
-   Do not infer brand, material, price, occasion, user intent, demographics, or
-   any property not directly supported by the supplied images.
+   Use the full original outfit image for composition and context, and the bound
+   crops for item-level detail. Do not infer brand, material, price, occasion,
+   user intent, demographics, or any property not directly supported by the
+   supplied images.
 5. Every diagnosis observation is relational: it must include the problematic
    item and at least one other original outfit item. Prefer one strongest useful
    relation; add a second only when it contributes a genuinely different visual
@@ -400,14 +402,16 @@ def build_qwen_messages_v2(
     min_pixels: int,
     max_pixels: int,
     must_exist: bool = True,
+    original_image_ref: str | Path | None = None,
 ) -> list[dict]:
-    """Bind original garment crops + authoritative Top-3 images to score-free context.
+    """Bind the full outfit, garment crops, and authoritative Top-3 images.
 
-    Outfit crops remain positional because item_index is canonical and already
-    frozen by V1. Recommendation images are keyed by item_id rather than passed
-    positionally; this prevents an accidental rank/image mismatch at the caller
-    boundary. Full internal evidence is validated first, then projected so raw
-    numerical scores never enter the Qwen prompt.
+    The full uploaded image gives Qwen whole-outfit context while crops remain
+    positional because item_index is canonical and already frozen by V1.
+    Recommendation images are keyed by item_id rather than passed positionally;
+    this prevents an accidental rank/image mismatch at the caller boundary. Full
+    internal evidence is validated first, then projected so raw numerical scores
+    never enter the Qwen prompt.
     """
 
     normalized = validate_vlm_evidence_v2(evidence)
@@ -430,6 +434,30 @@ def build_qwen_messages_v2(
 
     problem_index = int(normalized["diagnosis"]["problematic_item_index"])
     content: list[dict] = []
+
+    if original_image_ref is not None:
+        content.append(
+            {
+                "type": "text",
+                "text": (
+                    "VISUAL INPUT GROUP: FULL ORIGINAL OUTFIT IMAGE. This is the "
+                    "user-uploaded outfit image. Use it for whole-outfit composition, "
+                    "layering, color balance, silhouette, and overall context. "
+                    "Do not invent details that are not visible."
+                ),
+            }
+        )
+        content.append(
+            {
+                "type": "image",
+                "image": _normalize_image_ref_v2(
+                    original_image_ref,
+                    must_exist=must_exist,
+                ),
+                "min_pixels": min_pixels,
+                "max_pixels": max_pixels,
+            }
+        )
 
     content.append(
         {

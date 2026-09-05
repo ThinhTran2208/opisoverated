@@ -18,6 +18,9 @@ class _FakeCrop:
 
 
 class _FakeImage:
+    def save(self, path, format=None):
+        Path(path).write_bytes(b"fake-original-image")
+
     def crop(self, box):
         return _FakeCrop()
 

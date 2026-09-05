@@ -26,8 +26,9 @@ class InferenceContext:
     """One detected outfit plus the image references needed downstream.
 
     Embeddings and categories live separately from garment metadata so the scorer
-    consumes tensors directly while the VLM receives only structured garment
-    metadata and crop references.  ``close`` owns any temporary crop lifecycle.
+    consumes tensors directly while the VLM receives structured garment metadata,
+    the original outfit image, and crop references. ``close`` owns the temporary
+    image lifecycle.
     """
 
     garments: list[Mapping[str, object]]
@@ -35,6 +36,7 @@ class InferenceContext:
     categories: object
     crop_image_refs: list[str | Path] = field(default_factory=list)
     original_image: object | None = None
+    original_image_ref: str | Path | None = None
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     metadata: dict[str, object] = field(default_factory=dict)
     cleanup: Callable[[], None] | None = field(default=None, repr=False)
