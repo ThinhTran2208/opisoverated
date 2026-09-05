@@ -1,0 +1,65 @@
+{
+  "dataset": "EVAL3-Test2000-Full",
+  "source_split_name": "EVAL3-Test2000-Candidate",
+  "outfit_count": 2000,
+  "item_count": 8000,
+  "items_per_outfit": 4,
+  "ordered_test_ids_sha256": "9aa2935371e86c03d56bb546b57a77690838f031cd93e1258f84b1351858dcf9",
+  "records_sha256": "505d147c6e056924355c9cfadb737262078a2b2f0bc06f52e0e7151fb297d1e8",
+  "git": {
+    "repository": "https://github.com/ThinhTran2208/opisoverated.git",
+    "branch": "feat/production-inference-v1",
+    "commit": "d99fda52fc0b7c0f78590b953ce63352fe2c2954"
+  },
+  "preprocessing": {
+    "fashionclip_model_id": "patrickjohncyh/fashion-clip",
+    "embedding_version": "fashionclip-512-l2-v1",
+    "embedding_dim": 512,
+    "dtype": "float32",
+    "normalization": "l2",
+    "method": "CLIPProcessor -> CLIPModel.get_image_features -> float32 -> L2",
+    "rf_detr_used": false,
+    "category_classifier_used": false,
+    "category_assignment_reason": "EVALUATION3 U/B/S/G roles are already known"
+  },
+  "role_order": [
+    "U",
+    "B",
+    "S",
+    "G"
+  ],
+  "role_to_category": {
+    "U": "TOP",
+    "B": "BOTTOM",
+    "S": "SHOES",
+    "G": "BAG"
+  },
+  "role_to_category_id": {
+    "U": 1,
+    "B": 2,
+    "S": 5,
+    "G": 6
+  },
+  "scorer": {
+    "scorer_version": "type_aware_pairwise_v1",
+    "checkpoint_path": "/content/drive/MyDrive/ML_Final/scorer_runs/type_aware_pairwise_v1/final_val_auc_v5_seed42/best.pt",
+    "checkpoint_sha256": "7b3d0b6e0d44e3de517565f5725ded198bbc762b02a4dece26a58ee145cfed9c",
+    "output": "compatibility_logit",
+    "score_summary": {
+      "scorer_version": "type_aware_pairwise_v1",
+      "checkpoint_epoch": 52,
+      "checkpoint_best_valid_roc_auc": 0.6905082489625538,
+      "prediction_count": 2000,
+      "logit_mean": -0.721110460627824,
+      "logit_std": 1.1793282682149695,
+      "logit_min": -5.385634422302246,
+      "logit_max": 2.566880464553833
+    }
+  },
+  "outputs": {
+    "items_csv": "/content/drive/MyDrive/EVALUATION3/eval3_test2000_scorer_full_v1/EVAL3-Test2000-Full-items.csv",
+    "embeddings_pt": "/content/drive/MyDrive/EVALUATION3/eval3_test2000_scorer_full_v1/EVAL3-Test2000-Full-embeddings.pt",
+    "scorer_ready_jsonl": "/content/drive/MyDrive/EVALUATION3/eval3_test2000_scorer_full_v1/EVAL3-Test2000-Full-scorer-ready.jsonl",
+    "predictions_csv": "/content/drive/MyDrive/EVALUATION3/eval3_test2000_scorer_full_v1/EVAL3-Test2000-Full-predictions.csv"
+  }
+}
