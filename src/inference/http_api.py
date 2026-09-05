@@ -17,7 +17,7 @@ from pathlib import Path
 try:
     from fastapi import FastAPI, File, UploadFile
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import JSONResponse
+    from fastapi.responses import FileResponse, JSONResponse
 except ModuleNotFoundError as error:  # pragma: no cover - runtime dependency.
     raise RuntimeError(
         "FastAPI runtime dependencies are missing; install requirements-runtime.txt"
@@ -160,6 +160,16 @@ def create_app(pipeline: ProductionInferencePipeline) -> FastAPI:
 
     inference_semaphore = asyncio.Semaphore(1)
     pending_requests = 0
+    frontend_path = REPO_ROOT / "frontend" / "index.html"
+
+    @application.get("/", include_in_schema=False)
+    def frontend():
+        if not frontend_path.is_file():
+            return JSONResponse(
+                status_code=404,
+                content={"status": "error", "message": "Frontend is not installed"},
+            )
+        return FileResponse(frontend_path, media_type="text/html")
 
     @application.get("/healthz")
     def healthz():
