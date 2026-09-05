@@ -18,6 +18,8 @@ Qwen3-VL closed-taxonomy visual evidence
         ↓
 validate_visual_analysis_v2(...)
         ↓
+dedicated `/v2/reason` pass with full outfit + selected-item crop
+        ↓
 internal QA/debug explanation
         +
 score-free integration handoff
@@ -28,6 +30,11 @@ vlm-user-facing-v2
 The full original outfit image is sent when available. It supplies whole-outfit
 composition and layering context; positional crops remain the authoritative
 item-level visual bindings.
+
+The dedicated reason pass uses the same loaded Qwen backend but a separate
+short-text prompt. Its output is best-effort and is merged only into the
+user-facing `problematic_item.reason`; failures leave the validated V2 result
+and its neutral fallback intact.
 
 ## Decision authority vs visual evidence
 

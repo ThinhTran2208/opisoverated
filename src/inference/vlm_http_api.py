@@ -337,6 +337,94 @@ def create_app(
             "explanation": run["user_facing"],
         }
 
+    @application.post("/v2/reason")
+    def explain_reason_v2(payload: dict):
+        """Run the dedicated natural-language reason pass on two images."""
+
+        if vlm_runtime_v2 is None:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "error", "error": "VLM V2 is not configured"},
+            )
+
+        sample_id = payload.get("sample_id")
+        target_item = payload.get("target_item")
+        original_image = payload.get("original_image")
+        target_image = payload.get("target_image")
+        if not isinstance(sample_id, str) or not sample_id.strip():
+            return JSONResponse(
+                status_code=422,
+                content={"status": "error", "error": "sample_id must be non-empty"},
+            )
+        if not isinstance(target_item, Mapping):
+            return JSONResponse(
+                status_code=422,
+                content={"status": "error", "error": "target_item must be an object"},
+            )
+        item_index = target_item.get("item_index")
+        if (
+            isinstance(item_index, bool)
+            or not isinstance(item_index, int)
+            or item_index < 0
+        ):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "status": "error",
+                    "error": "target_item.item_index must be a non-negative integer",
+                },
+            )
+        if not isinstance(original_image, Mapping):
+            return JSONResponse(
+                status_code=422,
+                content={"status": "error", "error": "original_image must be an object"},
+            )
+        if not isinstance(target_image, Mapping):
+            return JSONResponse(
+                status_code=422,
+                content={"status": "error", "error": "target_image must be an object"},
+            )
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="vlm-v2-reason-") as directory:
+                root = Path(directory)
+                original_ref = _decode_crop(original_image, index=0, directory=root)
+                target_ref = _decode_crop(target_image, index=1, directory=root)
+                adapter = vlm_runtime_v2.get_adapter()
+                if not hasattr(adapter, "explain_reason"):
+                    raise RuntimeError("VLM reason pass is not available")
+                reason = adapter.explain_reason(
+                    target_item=dict(target_item),
+                    original_image_ref=original_ref,
+                    target_image_ref=target_ref,
+                    must_exist=True,
+                )
+        except (TypeError, ValueError, FileNotFoundError) as error:
+            return JSONResponse(
+                status_code=422,
+                content={"status": "error", "error": str(error)},
+            )
+        except RuntimeError as error:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "error", "error": str(error)},
+            )
+        except Exception as error:  # defensive: never return plain-text 500s.
+            LOGGER.exception("Unhandled VLM V2 reason request failure")
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "status": "error",
+                    "error": {
+                        "code": "internal_server_error",
+                        "message": "VLM reason request failed; check the VLM service log",
+                        "details": {"exception": type(error).__name__},
+                    },
+                },
+            )
+
+        return {"status": "ok", "reason": reason}
+
     return application
 
 

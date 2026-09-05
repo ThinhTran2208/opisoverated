@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from src.vlm.prompt_v2 import (
+    NATURAL_REASON_SYSTEM_PROMPT_V2,
     PROMPT_CONTEXT_SCHEMA_VERSION_V2,
     SYSTEM_PROMPT_V2,
     TWO_ITEM_EXTRAPOLATION_LIMITATION,
@@ -203,6 +204,27 @@ class VlmPromptV2Tests(unittest.TestCase):
         self.assertEqual(len(image_rows), 8)
         self.assertIn("VISUAL INPUT GROUP: FULL ORIGINAL OUTFIT IMAGE", text)
         self.assertEqual(image_rows[0]["image"], original_ref.as_uri())
+
+    def test_builds_separate_natural_reason_prompt_with_full_and_target_images(self):
+        from src.vlm.prompt_v2 import build_qwen_reason_messages_v2
+
+        messages = build_qwen_reason_messages_v2(
+            {"item_index": 2, "item_id": "garment-2", "coarse_category": "OUTERWEAR"},
+            "https://example.com/outfit.jpg",
+            "https://example.com/target.jpg",
+            min_pixels=262144,
+            max_pixels=262144,
+            must_exist=False,
+        )
+        self.assertEqual(len(messages), 2)
+        self.assertIn(NATURAL_REASON_SYSTEM_PROMPT_V2, messages[0]["content"][0]["text"])
+        image_rows = [
+            row for row in messages[1]["content"] if row["type"] == "image"
+        ]
+        self.assertEqual([row["image"] for row in image_rows], [
+            "https://example.com/outfit.jpg",
+            "https://example.com/target.jpg",
+        ])
 
     def test_prompt_context_projects_out_all_raw_score_keys(self):
         context = build_prompt_context_v2(evidence_fixture())

@@ -386,16 +386,62 @@ class RemoteVLMAdapterV2:
             except httpx.HTTPError as error:
                 raise VLMServiceError(f"VLM V2 service request failed: {error}") from error
 
-        if response.status_code >= 400:
-            raise VLMServiceError(
-                f"VLM V2 service returned HTTP {response.status_code}: {response.text[:500]}"
-            )
-        try:
-            body = response.json()
-        except ValueError as error:
-            raise VLMServiceError("VLM V2 service returned non-JSON content") from error
-        if not isinstance(body, Mapping) or body.get("status") != "ok":
-            raise VLMServiceError(f"VLM V2 service returned an invalid response: {body!r}")
-        if "explanation" not in body:
-            raise VLMServiceError("VLM V2 service response is missing explanation")
-        return body["explanation"]
+            if response.status_code >= 400:
+                raise VLMServiceError(
+                    "VLM V2 service returned HTTP "
+                    f"{response.status_code}: {response.text[:500]}"
+                )
+            try:
+                body = response.json()
+            except ValueError as error:
+                raise VLMServiceError("VLM V2 service returned non-JSON content") from error
+            if not isinstance(body, Mapping) or body.get("status") != "ok":
+                raise VLMServiceError(
+                    f"VLM V2 service returned an invalid response: {body!r}"
+                )
+            if "explanation" not in body:
+                raise VLMServiceError("VLM V2 service response is missing explanation")
+
+            explanation = body["explanation"]
+            if original_image_ref is not None and isinstance(explanation, Mapping):
+                problem_index = int(loo_result["problematic_item_index"])
+                reason_payload = {
+                    "sample_id": str(sample_id),
+                    "target_item": {
+                        "item_index": problem_index,
+                        "item_id": item_ids[problem_index],
+                        "coarse_category": coarse_categories[problem_index],
+                    },
+                    "original_image": self._encode_path(Path(original_image_ref)),
+                    "target_image": self._encode_path(
+                        Path(crop_image_refs[problem_index])
+                    ),
+                }
+                try:
+                    reason_response = httpx.post(
+                        f"{self.service_url}/v2/reason",
+                        json=reason_payload,
+                        timeout=self.timeout_seconds,
+                    )
+                    if reason_response.status_code < 400:
+                        reason_body = reason_response.json()
+                        reason = (
+                            reason_body.get("reason")
+                            if isinstance(reason_body, Mapping)
+                            and reason_body.get("status") == "ok"
+                            else ""
+                        )
+                        if isinstance(reason, str) and reason.strip():
+                            enriched = dict(explanation)
+                            problematic_item = enriched.get("problematic_item")
+                            if isinstance(problematic_item, Mapping):
+                                enriched_problematic_item = dict(problematic_item)
+                                enriched_problematic_item["reason"] = reason.strip()
+                                enriched["problematic_item"] = enriched_problematic_item
+                                explanation = enriched
+                except (httpx.HTTPError, ValueError, TypeError):
+                    # The dedicated prose pass is best-effort. The validated V2
+                    # explanation remains usable if this optional call fails.
+                    pass
+
+            return explanation

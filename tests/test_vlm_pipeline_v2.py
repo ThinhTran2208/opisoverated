@@ -1,7 +1,9 @@
 """Tests for deterministic VLM V2 rendering and handoff boundaries."""
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from src.vlm.config_v2 import VLM_PROTOCOL_VERSION_V2, validate_vlm_config_v2
 from src.vlm.pipeline_v2 import (
@@ -164,6 +166,28 @@ class VlmPipelineV2Tests(unittest.TestCase):
         run = pipeline.explain(evidence, outfit_images(), recommendation_images(), must_exist=False)
         self.assertEqual(run["generation_attempts"], 2)
         self.assertEqual(backend.calls, 2)
+
+    def test_dedicated_reason_pass_returns_short_natural_text(self):
+        backend = FakeBackend([
+            "Chiếc áo khoác tối màu tạo tương phản mạnh với phần váy sáng, khiến outfit kém liền mạch hơn."
+        ])
+        pipeline = VLMExplanationPipelineV2(backend, config_fixture())
+        with tempfile.TemporaryDirectory() as directory:
+            original = Path(directory) / "original.png"
+            target = Path(directory) / "target.png"
+            original.write_bytes(b"original")
+            target.write_bytes(b"target")
+            reason = pipeline.explain_reason(
+                target_item={
+                    "item_index": 1,
+                    "item_id": "bottom",
+                    "coarse_category": "BOTTOM",
+                },
+                original_image_ref=original,
+                target_image_ref=target,
+            )
+        self.assertIn("Chiếc áo khoác tối màu", reason)
+        self.assertEqual(backend.calls, 1)
 
     def test_pipeline_fails_after_repair_budget_is_exhausted(self):
         evidence = evidence_fixture()

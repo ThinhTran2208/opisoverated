@@ -36,6 +36,7 @@ from .prompt_v2 import (
     VISUAL_DIMENSIONS_V2,
     append_repair_request_v2,
     build_qwen_messages_v2,
+    build_qwen_reason_messages_v2,
     required_limitations_v2,
 )
 from .schema_v2 import canonical_evidence_json_v2, validate_vlm_evidence_v2
@@ -86,6 +87,26 @@ def _validate_user_reason(
             "diagnosis.user_reason must be empty unless diagnosis supports_loo"
         )
     return reason
+
+
+def _sanitize_generated_reason(value: object) -> str:
+    """Keep only a short, safe sentence from the dedicated reason call."""
+
+    if not isinstance(value, str):
+        return ""
+    reason = value.strip()
+    if reason.startswith("```") and reason.endswith("```"):
+        reason = reason[3:-3].strip()
+    if reason.casefold().startswith("lý do:"):
+        reason = reason.split(":", 1)[1].strip()
+    if reason.startswith(('"', "'")) and reason.endswith(('"', "'")):
+        reason = reason[1:-1].strip()
+    if not reason or "{" in reason or "}" in reason:
+        return ""
+    try:
+        return _validate_user_reason(reason, overall_visual_support="supports_loo")
+    except ValueError:
+        return ""
 
 DIAGNOSIS_EFFECT_LABELS_VI = {
     "supports_loo": "ủng hộ chẩn đoán LOO",
@@ -800,3 +821,28 @@ class VLMExplanationPipelineV2:
         if self.config["output"]["include_raw_response"]:
             run["raw_response"] = raw_response
         return run
+
+    def explain_reason(
+        self,
+        *,
+        target_item: Mapping[str, object],
+        original_image_ref: str | Path,
+        target_image_ref: str | Path,
+        must_exist: bool = True,
+    ) -> str:
+        """Run a dedicated short natural-language visual reason request."""
+
+        vision = self.config["vision"]
+        messages = build_qwen_reason_messages_v2(
+            target_item,
+            original_image_ref,
+            target_image_ref,
+            min_pixels=int(vision["min_pixels"]),
+            max_pixels=int(vision["max_pixels"]),
+            must_exist=must_exist,
+        )
+        generation = dict(self.config["generation"])
+        generation.pop("max_validation_retries", None)
+        generation["max_new_tokens"] = 96
+        raw_reason = self.backend.generate(messages, generation)
+        return _sanitize_generated_reason(raw_reason)

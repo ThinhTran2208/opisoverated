@@ -11,6 +11,59 @@ HAS_FASTAPI = importlib.util.find_spec("fastapi") is not None
 
 @unittest.skipUnless(HAS_FASTAPI, "FastAPI runtime dependencies are not installed")
 class VLMV2ServiceAPITests(unittest.TestCase):
+    def test_v2_reason_service_passes_full_and_target_images(self):
+        from fastapi.testclient import TestClient
+        from src.inference.vlm_http_api import create_app
+
+        captured = {}
+
+        class FakeAdapter:
+            def explain_reason(
+                self,
+                *,
+                target_item,
+                original_image_ref,
+                target_image_ref,
+                must_exist,
+            ):
+                captured["target_item"] = target_item
+                captured["original_exists"] = Path(original_image_ref).is_file()
+                captured["target_exists"] = Path(target_image_ref).is_file()
+                captured["must_exist"] = must_exist
+                return "Chiếc áo hiện tại lệch tông với tổng thể outfit."
+
+        class FakeRuntime:
+            config_path = Path("fake-vlm-v2-config.json")
+            loaded = False
+
+            def get_adapter(self):
+                return FakeAdapter()
+
+        client = TestClient(create_app(FakeRuntime(), FakeRuntime()))
+        encoded = base64.b64encode(b"fake-image-bytes").decode("ascii")
+        response = client.post(
+            "/v2/reason",
+            json={
+                "sample_id": "sample-v2-reason",
+                "target_item": {
+                    "item_index": 2,
+                    "item_id": "garment-2",
+                    "coarse_category": "OUTERWEAR",
+                },
+                "original_image": {"filename": "original.png", "base64": encoded},
+                "target_image": {"filename": "target.png", "base64": encoded},
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["reason"],
+            "Chiếc áo hiện tại lệch tông với tổng thể outfit.",
+        )
+        self.assertEqual(captured["target_item"]["item_index"], 2)
+        self.assertTrue(captured["original_exists"])
+        self.assertTrue(captured["target_exists"])
+        self.assertTrue(captured["must_exist"])
+
     def test_v2_service_rejects_non_top3_candidate_image_map(self):
         from fastapi.testclient import TestClient
         from src.inference.vlm_http_api import create_app

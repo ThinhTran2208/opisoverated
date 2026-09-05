@@ -155,6 +155,15 @@ rerank it. Candidate identity and rank remain authoritative upstream output.
 
 A recommendation replaces the LOO-selected problematic item. Candidate visual
 observations therefore may reference only the remaining original outfit items.
+
+## Dedicated natural-language reason pass
+
+The service also exposes a separate `/v2/reason` request. It receives only the
+full original outfit image and the crop of the already-selected problematic
+item. This prompt returns one or two short Vietnamese sentences for
+`problematic_item.reason`; it does not choose the item, rank candidates, or
+produce compatibility scores. The same loaded Qwen backend is reused, so this
+is a second inference pass rather than a second model copy.
 For a four-item outfit where item 2 is problematic, the allowed context is:
 
 ```text

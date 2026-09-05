@@ -144,6 +144,20 @@ Hard rules:
 """
 
 
+NATURAL_REASON_SYSTEM_PROMPT_V2 = """You are a visual fashion explanation assistant.
+Inspect the supplied full outfit image and the crop of the one item selected by
+the upstream system for replacement. Return only one or two natural Vietnamese
+sentences explaining why that selected item looks less compatible with the rest
+of the visible outfit.
+
+Use only visible color, pattern, silhouette, formality, and style relations. Do
+not mention scores, ranks, models, algorithms, hidden metadata, or unsupported
+facts such as brand, price, occasion, or user intent. Do not recommend another
+item and do not change the selected item. If no defensible visual reason is
+visible, return an empty string. Never invent a reason just to fill the output.
+"""
+
+
 def required_limitations_v2(evidence: Mapping[str, object]) -> tuple[str, ...]:
     """Return exact machine-readable disclosures for one V2 case."""
 
@@ -211,6 +225,81 @@ def _normalize_image_ref_v2(value: object, *, must_exist: bool) -> str:
     if must_exist and not path.is_file():
         raise FileNotFoundError(f"Missing VLM V2 image: {path}")
     return path.as_uri()
+
+
+def build_qwen_reason_messages_v2(
+    target_item: Mapping[str, object],
+    original_image_ref: str | Path,
+    target_image_ref: str | Path,
+    *,
+    min_pixels: int,
+    max_pixels: int,
+    must_exist: bool = True,
+) -> list[dict]:
+    """Build the separate, image-grounded natural-reason request."""
+
+    if not isinstance(target_item, Mapping):
+        raise TypeError("target_item must be an object")
+    item_index = target_item.get("item_index")
+    if isinstance(item_index, bool) or not isinstance(item_index, int) or item_index < 0:
+        raise ValueError("target_item.item_index must be a non-negative integer")
+    item_id = str(target_item.get("item_id", "")).strip()
+    category = str(target_item.get("coarse_category", "")).strip().upper()
+    if not item_id or not category:
+        raise ValueError("target_item must include item_id and coarse_category")
+    min_pixels, max_pixels = _validate_pixel_budget(min_pixels, max_pixels)
+
+    return [
+        {
+            "role": "system",
+            "content": [{"type": "text", "text": NATURAL_REASON_SYSTEM_PROMPT_V2}],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "FULL ORIGINAL OUTFIT IMAGE: inspect the complete outfit and "
+                        "the relationships among its visible items."
+                    ),
+                },
+                {
+                    "type": "image",
+                    "image": _normalize_image_ref_v2(
+                        original_image_ref,
+                        must_exist=must_exist,
+                    ),
+                    "min_pixels": min_pixels,
+                    "max_pixels": max_pixels,
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        "SELECTED ITEM TO EXPLAIN: "
+                        f"item_index={item_index}, item_id={item_id}, "
+                        f"coarse_category={category}. The item identity is fixed."
+                    ),
+                },
+                {
+                    "type": "image",
+                    "image": _normalize_image_ref_v2(
+                        target_image_ref,
+                        must_exist=must_exist,
+                    ),
+                    "min_pixels": min_pixels,
+                    "max_pixels": max_pixels,
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        "Return only the short Vietnamese reason text. Do not add a "
+                        "label, Markdown, JSON, score, or recommendation."
+                    ),
+                },
+            ],
+        },
+    ]
 
 
 def _validate_pixel_budget(min_pixels: object, max_pixels: object) -> tuple[int, int]:
